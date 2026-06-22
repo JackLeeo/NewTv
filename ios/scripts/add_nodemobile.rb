@@ -36,12 +36,16 @@ if options[:xcframework].nil?
   abort("❌ 必须指定 --xcframework 参数")
 end
 
-xcframework_abs = File.expand_path(options[:xcframework], File.dirname(options[:pbxproj]))
+# 把传入的 xcframework 路径转成绝对路径
+# 用 `Dir.pwd`（当前工作目录）做 base，因为：
+#   - workflow 步骤 `cd ios` 后，参数会被解析为相对 ios/
+#   - 但 pbxproj 在 `ios/Runner.xcodeproj/`，相对于 pbxproj 解析会让 `../` 跑偏
+xcframework_abs = File.expand_path(options[:xcframework], Dir.pwd)
 unless Dir.exist?(xcframework_abs)
   abort("❌ 找不到 xcframework: #{xcframework_abs}")
 end
 
-project_path = File.expand_path(options[:pbxproj])
+project_path = File.expand_path(options[:pbxproj], Dir.pwd)
 unless File.exist?(project_path)
   abort("❌ 找不到 pbxproj: #{project_path}")
 end
@@ -86,7 +90,9 @@ end
 
 framework_ref = frameworks_group.files.find { |f| f.path == framework_relative_path || f.name == framework_basename }
 unless framework_ref
-  framework_ref = frameworks_group.new_file(File.expand_path(framework_relative_path, File.dirname(options[:pbxproj])))
+  # 传绝对路径给 new_file，让 xcodeproj 自己处理 source_tree
+  # 如果传相对路径，xcodeproj 默认按 group 解析，写出来的 pbxproj 路径会错
+  framework_ref = frameworks_group.new_file(xcframework_abs)
   framework_ref.source_tree = '<group>'
   framework_ref.name = framework_basename
   framework_ref.last_known_file_type = 'wrapper.xcframework'
