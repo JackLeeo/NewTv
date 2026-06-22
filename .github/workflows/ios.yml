@@ -1,59 +1,322 @@
-name: Build for iOS
+name: Build iOS TrollStore IPA (Flutter + NodeMobile)
 
+# 触发：
+#   - push to main / tag: 自动构建
+#   - workflow_dispatch: 手动触发
 on:
-  workflow_call:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
     inputs:
       tag:
-        description: "tag"
+        description: "Release tag (e.g. v1.0.0). Empty = only upload to Actions artifacts"
         required: false
         default: ""
-        type: string
-  workflow_dispatch:
+
+# 避免同一个 ref 跑多次（pod install 慢，浪费时间 + macOS 分钟数）
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-macos-app:
-    name: Release IOS
-    runs-on: macos-26
+  build-ios-trollstore:
+    name: Build Runner.app + NodeMobile + ldid → IPA
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    env:
+      # iOS 用的是「NodeMobile.xcframework」嵌入方案（参考 D:\gz\tvbox-Swift-main）
+      # 不能像 Windows/Android 那样用 .node.exe —— iOS 沙盒拒绝任意可执行文件
+      # NodeMobile 把 Node.js 引擎编译成 iOS framework，主 app 通过 ObjC 接口调
+      #
+      # nodejs-mobile 官方 release
+      NODEJS_MOBILE_VERSION: "v18.20.4"
+      NODEJS_MOBILE_URL: "https://github.com/nodejs-mobile/nodejs-mobile/releases/download/v18.20.4/nodejs-mobile-v18.20.4-ios.zip"
+      BUNDLE_NAME: Runner
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup flutter
+      - name: Setup Flutter (stable)
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           flutter-version-file: pubspec.yaml
+          cache: true
 
-      - name: Set and Extract version
-        shell: pwsh
-        run: lib/scripts/build.ps1
-
-      - name: Apply Patch
-        shell: pwsh
-        run: lib/scripts/patch.ps1 iOS
-
-      - name: Build iOS
+      - name: Show Flutter / Xcode versions
         run: |
-          flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json
-          ln -sf ./build/ios/iphoneos Payload
-          # make AltSign happy...
-          find Payload/Runner.app/Frameworks -type d -name "*.framework" -exec codesign --force --sign - --preserve-metadata=identifier,entitlements {} \;
-          zip -r9 PiliPlus_ios_${{env.version}}.ipa Payload/Runner.app
+          flutter --version
+          xcodebuild -version
+          sw_vers
 
-      - name: Release
-        if: ${{ github.event.inputs.tag != '' }}
+      - name: Install ldid
+        # Saurik 的 ldid 工具，做 ad-hoc 伪签名（TrollStore 接受）
+        run: brew install ldid
+
+      - name: Install Node.js for build scripts
+        # Flutter stable 偶尔会带 node，但显式装一个 LTS 保证 npm install 跑得动
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'assets/nodejs-project/package-lock.json'
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/Pods
+            ~/.cocoapods
+            ~/Library/Caches/CocoaPods
+          key: ${{ runner.os }}-pods-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build Node.js project (main.js)
+        # 参考 D:\gz\tvbox-Swift-main 的 build-ios.sh
+        # 编译 assets/nodejs-project/src/* → dist/main.js + dist/main.js.md5
+        # 编译后必须存在 dist/main.js，否则 iOS 端 NodeMobile 启动时会闪退
+        run: |
+          set -e
+          cd assets/nodejs-project
+          echo "=== npm install ==="
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          echo "=== esbuild main.js ==="
+          if [ -f "esbuild.js" ]; then
+            node esbuild.js
+          elif [ -f "build-ios.sh" ]; then
+            bash build-ios.sh
+          else
+            echo "❌ no esbuild.js or build-ios.sh found"
+            exit 1
+          fi
+          if [ ! -f "dist/main.js" ]; then
+            echo "❌ dist/main.js not produced"
+            exit 1
+          fi
+          echo "=== dist/ ==="
+          ls -lh dist/
+          echo "=== main.js md5 ==="
+          md5 dist/main.js > dist/main.js.md5
+          cat dist/main.js.md5
+
+      - name: Download NodeMobile.xcframework
+        # 参考 build_trollstore.yml 的同款步骤
+        # NodeMobile 是 nodejs-mobile 项目发布的 iOS framework
+        # 它是 iOS 端 Node.js 运行时的**唯一合法**运行方式
+        run: |
+          set -e
+          echo "=== Downloading NodeMobile.xcframework ==="
+          mkdir -p build/ios/Frameworks
+          cd build/ios/Frameworks
+          if [ -d "NodeMobile.xcframework" ]; then
+            rm -rf NodeMobile.xcframework
+          fi
+          curl -fSL "$NODEJS_MOBILE_URL" -o nodejs-mobile.zip
+          TEMP_DIR=$(mktemp -d)
+          unzip -q nodejs-mobile.zip -d "$TEMP_DIR"
+          FRAMEWORK_PATH=$(find "$TEMP_DIR" -name "NodeMobile.xcframework" -type d | head -1)
+          if [ -z "$FRAMEWORK_PATH" ]; then
+            echo "❌ NodeMobile.xcframework not found in archive"
+            exit 1
+          fi
+          cp -R "$FRAMEWORK_PATH" .
+          rm -rf "$TEMP_DIR" nodejs-mobile.zip
+          echo "=== NodeMobile.xcframework slices ==="
+          ls NodeMobile.xcframework/
+          echo "✅ NodeMobile.xcframework ready"
+
+      - name: Build iOS (no codesign)
+        run: |
+          flutter build ios \
+            --release \
+            --no-codesign \
+            --no-tree-shake-icons
+
+      - name: Locate Runner.app
+        id: locate
+        run: |
+          set -e
+          APP_PATH=$(find build/ios/iphoneos -maxdepth 2 -name "${BUNDLE_NAME}.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ Runner.app not found"
+            find build/ios -name "*.app" -type d || true
+            exit 1
+          fi
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_OUTPUT"
+          echo "📦 App bundle: $APP_PATH"
+          ls -la "$APP_PATH"
+
+      - name: Embed NodeMobile.xcframework + main.js
+        # 关键步骤：把 framework 和 main.js 塞进 Runner.app bundle
+        # 这样 iOS 端 Flutter 调 NodeMobile API 时能 load 框架 + main.js
+        # 注意：**目前 pbxproj 没 link NodeMobile**，所以这只是物理塞进去
+        # 完整集成需要在 ios/Runner.xcodeproj/project.pbxproj 加 link + embed
+        # 详见 ios/Runner/NodeJSBridge.swift 里的 platform channel
+        run: |
+          set -e
+          APP_PATH=${{ steps.locate.outputs.APP_PATH }}
+          FW_SRC="build/ios/Frameworks/NodeMobile.xcframework"
+          mkdir -p "$APP_PATH/Frameworks"
+          # 1) NodeMobile.xcframework (整包 copy，TrollStore 接受)
+          cp -R "$FW_SRC" "$APP_PATH/Frameworks/"
+          # 2) main.js (NodeMobile 启动入口)
+          mkdir -p "$APP_PATH/nodejs-project"
+          cp assets/nodejs-project/dist/main.js   "$APP_PATH/nodejs-project/main.js"
+          cp assets/nodejs-project/dist/main.js.md5 "$APP_PATH/nodejs-project/main.js.md5"
+          echo "=== Runner.app/Frameworks ==="
+          ls "$APP_PATH/Frameworks/"
+          echo "=== Runner.app/nodejs-project ==="
+          ls -la "$APP_PATH/nodejs-project/"
+
+      - name: Strip original code signature
+        run: |
+          APP_PATH=${{ steps.locate.outputs.APP_PATH }}
+          rm -rf "$APP_PATH/_CodeSignature"
+          rm -f  "$APP_PATH/embedded.mobileprovision"
+          echo "✅ Stripped original signature"
+
+      - name: Pseudo-sign with ldid
+        # ldid -S = ad-hoc 伪签名（TrollStore 接受）
+        # 主 app + 所有 framework + 所有 dylib 都要签
+        # 关键：NodeMobile.framework 内的二进制也必须签
+        run: |
+          set -e
+          APP_PATH=${{ steps.locate.outputs.APP_PATH }}
+          echo "=== Signing main app ==="
+          ldid -S "$APP_PATH"
+          if [ -d "$APP_PATH/Frameworks" ]; then
+            for FRAMEWORK in "$APP_PATH/Frameworks/"*.framework; do
+              if [ -d "$FRAMEWORK" ]; then
+                FW_NAME=$(basename "$FRAMEWORK" .framework)
+                FW_EXEC="$FRAMEWORK/$FW_NAME"
+                if [ -f "$FW_EXEC" ]; then
+                  ldid -S "$FW_EXEC"
+                  echo "✅ Signed framework: $FW_NAME"
+                fi
+              fi
+            done
+            # xcframework 内部还有多 slice 子目录（ios-arm64_x86_64-simulator 等）
+            # 每个子目录里的二进制也要签
+            for XCFRAMEWORK in "$APP_PATH/Frameworks/"*.xcframework; do
+              if [ -d "$XCFRAMEWORK" ]; then
+                for SLICE in "$XCFRAMEWORK"/*/; do
+                  if [ -d "$SLICE" ]; then
+                    FW_NAME=$(basename "$SLICE" .framework)
+                    FW_EXEC="$SLICE$FW_NAME"
+                    if [ -f "$FW_EXEC" ]; then
+                      ldid -S "$FW_EXEC"
+                      echo "✅ Signed xcframework slice: $FW_NAME ($(basename $(dirname "$SLICE")))"
+                    fi
+                  fi
+                done
+              fi
+            done
+            for DYLIB in "$APP_PATH/Frameworks/"*.dylib; do
+              if [ -f "$DYLIB" ]; then
+                ldid -S "$DYLIB"
+                echo "✅ Signed dylib: $(basename "$DYLIB")"
+              fi
+            done
+          fi
+          for BIN in "$APP_PATH/"*.dylib "$APP_PATH/"*.so; do
+            if [ -f "$BIN" ]; then
+              ldid -S "$BIN"
+              echo "✅ Signed: $(basename "$BIN")"
+            fi
+          done
+
+      - name: Package IPA
+        run: |
+          set -e
+          APP_PATH=${{ steps.locate.outputs.APP_PATH }}
+          mkdir -p build/ipa
+          TEMP_DIR=$(mktemp -d)
+          mkdir -p "$TEMP_DIR/Payload"
+          cp -R "$APP_PATH" "$TEMP_DIR/Payload/"
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+          IPA_NAME="tvbox-ios-${SHORT_SHA}.ipa"
+          cd "$TEMP_DIR"
+          zip -r -q -X "$GITHUB_WORKSPACE/build/ipa/${IPA_NAME}" Payload
+          cd "$GITHUB_WORKSPACE"
+          rm -rf "$TEMP_DIR"
+          echo "IPA_PATH=build/ipa/${IPA_NAME}" >> "$GITHUB_OUTPUT"
+          ls -lh build/ipa/
+          echo "✅ IPA created: $IPA_NAME"
+          echo "IPA_SIZE=$(du -h build/ipa/${IPA_NAME} | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tvbox-ios-trollstore
+          path: build/ipa/*.ipa
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload debug info
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-info
+          path: |
+            flutter_logs.txt
+            ios/Pods
+          retention-days: 7
+          if-no-files-found: ignore
+
+  release:
+    name: Create GitHub Release
+    needs: build-ios-trollstore
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download IPA from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: tvbox-ios-trollstore
+          path: dist
+
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag }}
-          name: ${{ github.event.inputs.tag }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
-            PiliPlus_ios_*.ipa
+            dist/*.ipa
+          body: |
+            ## TVBox iOS 巨魔安装包
 
-      - name: Upload ios release
-        uses: actions/upload-artifact@v7
-        with:
-          archive: false
-          name: iOS-release
-          path: PiliPlus_ios_*.ipa
+            ### 安装方式
+            1. 越狱机器：直接用 TrollStore 打开 IPA 安装
+            2. iOS 15.0 - 16.6.x：TrollStore v2 / v3
+            3. iOS 17+：Misaka / 其他巨魔衍生工具
+
+            ### ⚠️ 重要：本 IPA 包含 iOS 端 Node.js 集成
+            - 嵌入 [NodeMobile.xcframework](https://github.com/nodejs-mobile/nodejs-mobile) v18.20.4
+            - 嵌入 [main.js](file:///d:/gz/new/assets/nodejs-project/dist/main.js)（webpack 编译后的 Node 服务端脚本）
+            - iOS native 通过 platform channel 调 NodeMobile 启动 Node.js 进程
+            - **首次启动需要联网**下载远程源 URL（用户在设置页输入）
+
+            ### 兼容性
+            - iOS 16.0+（参考 Podfile）
+            - arm64 设备（iPhone 5s+）
+
+            ### 已知问题
+            - ⚠️ 需要先完成 iOS native platform channel 代码（`ios/Runner/NodeJSBridge.swift`）
+              才能从 Flutter 端启动 Node.js。本 workflow 已经把 framework + main.js
+              嵌进 IPA，但**实际启动 Node.js 还需要 Swift 端 platform channel**
+            - 部分 Windows-only 插件（media_kit 等）在 iOS 上无效
+            - iOS 端没有原生 media_kit 视频播放（需要切换成 video_player 或其他 iOS 插件）
