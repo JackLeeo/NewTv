@@ -146,6 +146,20 @@ jobs:
           ls NodeMobile.xcframework/
           echo "✅ NodeMobile.xcframework ready"
 
+      - name: Copy NodeMobile.xcframework to ios/Frameworks
+        # 关键：xcframework 必须放在项目内（ios/Frameworks/），pbxproj 才能用
+        # 短路径 `Frameworks/NodeMobile.xcframework`。
+        # 放项目外（build/ios/Frameworks/）时 pbxproj 需要 `../../build/...` 相对路径，
+        # 在不同 Xcode 解析 base 下会出 bug。
+        run: |
+          set -e
+          mkdir -p ios/Frameworks
+          rm -rf ios/Frameworks/NodeMobile.xcframework
+          cp -R build/ios/Frameworks/NodeMobile.xcframework ios/Frameworks/
+          echo "=== ios/Frameworks ==="
+          ls ios/Frameworks/
+          ls ios/Frameworks/NodeMobile.xcframework/
+
       - name: Install ruby + xcodeproj gem
         # macos-14 runner 自带 ruby，需要 xcodeproj gem 来自动改 project.pbxproj
         run: |
@@ -157,13 +171,14 @@ jobs:
         #   - 加 NodeJSBridge.swift 到 Runner group + Sources build phase
         #   - link NodeMobile.xcframework 到 Frameworks build phase
         #   - embed NodeMobile.xcframework 到 Embed Frameworks
+        # `--xcframework` 用相对 ios/ 的短路径（xcframework 已经被上面 copy 过来）
         run: |
           set -e
           cd ios
           ruby scripts/add_nodemobile.rb \
-            --xcframework ../build/ios/Frameworks/NodeMobile.xcframework
+            --xcframework Frameworks/NodeMobile.xcframework
           echo "=== pbxproj 改动 diff ==="
-          git diff --stat ios/Runner.xcodeproj/project.pbxproj || true
+          git diff --stat Runner.xcodeproj/project.pbxproj || true
 
       - name: Build iOS (no codesign)
         run: |

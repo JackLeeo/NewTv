@@ -147,6 +147,10 @@ devtools_options.yaml
 
 pili_release.json
 
+# iOS 端嵌入的 NodeMobile.xcframework（由 workflow 自动下载，不入库）
+ios/Frameworks/
+build/
+
 # nodejs 项目的 dist/ 目录里只有 main.js 是必需的（其它都是 webpack 中间产物），
 # 所以忽略整個 dist/ 但保留 main.js + main.js.md5
 **/dist/**
