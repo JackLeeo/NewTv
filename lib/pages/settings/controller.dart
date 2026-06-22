@@ -1,4 +1,9 @@
+import 'dart:io';
+import 'package:cached_network_image_ce/cached_network_image.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
 import 'package:get/get.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/player_engine.dart';
 import '../../services/api_config.dart';
@@ -246,10 +251,59 @@ class SettingsController extends GetxController {
     await prefs.setStringList('api_history', apiHistory.toList());
   }
 
-  void clearCache() {
-    // Flutter 端清除网络缓存和图片缓存
-    // 目前仅刷新缓存大小显示
-    refreshCacheSize();
+  /// 实际清除 Flutter 端所有缓存（图片 / HTTP 磁盘 / temp / app cache 目录）
+  ///
+  /// 涉及到的缓存：
+  /// - `PaintingBinding.instance.imageCache` —— Flutter 内存图片缓存
+  /// - `DefaultCacheManager` —— cached_network_image_ce 的磁盘缓存
+  ///   （HLS / m3u8 切片、详情页海报、Home 列表缩略图都走它）
+  /// - `getTemporaryDirectory()` —— Flutter / dio / webview 的临时文件
+  /// - `getApplicationCacheDirectory()` —— 应用自定义缓存
+  ///
+  /// **不清** `<Documents>/` 下的 Node.js 源码（user 自己的 source URL 内容），
+  /// 那个走 [NodeJSManager.deleteSource]，跟"清除缓存"是不同语义。
+  Future<void> clearCache() async {
+    // 1) Flutter 内存图片缓存
+    try {
+      final imageCache = PaintingBinding.instance.imageCache;
+      imageCache.clear();
+      imageCache.clearLiveImages();
+    } catch (e) {
+      debugPrint('=== clearCache: imageCache.clear failed: $e ===');
+    }
+
+    // 2) cached_network_image_ce 磁盘缓存
+    try {
+      await DefaultCacheManager().emptyCache();
+      debugPrint('=== clearCache: DefaultCacheManager.emptyCache OK ===');
+    } catch (e) {
+      debugPrint('=== clearCache: DefaultCacheManager.emptyCache failed: $e ===');
+    }
+
+    // 3) getTemporaryDirectory()
+    try {
+      final tmpDir = await getTemporaryDirectory();
+      await _deleteDirContents(tmpDir);
+    } catch (e) {
+      debugPrint('=== clearCache: tmp dir clear failed: $e ===');
+    }
+
+    // 4) getApplicationCacheDirectory()
+    try {
+      final appCacheDir = await getApplicationCacheDirectory();
+      await _deleteDirContents(appCacheDir);
+    } catch (e) {
+      debugPrint('=== clearCache: app cache dir clear failed: $e ===');
+    }
+
+    // 5) 给用户反馈 + 刷新显示
+    Get.snackbar(
+      '清除缓存',
+      '已清空图片 / 视频切片 / 临时文件',
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 2),
+    );
+    await refreshCacheSize();
   }
 
   /// 重置配置：清除已保存的源 URL + 历史记录 + 下载的源缓存
@@ -311,16 +365,89 @@ class SettingsController extends GetxController {
     await prefs.setInt('play_vlc_buffer_mode', mode.value);
   }
 
-  void refreshCacheSize() {
-    // Flutter 端暂无精确的磁盘缓存统计，显示占位值
-    cacheSizeString.value = _formatSize(bytes: 0);
+  /// 重新计算并刷新"缓存大小"显示
+  ///
+  /// 实际意义 = imageCache 内存估算 + temp 目录 + app cache 目录
+  /// （cached_network_image_ce 的磁盘缓存在 app cache 下面的
+  /// `libCachedImageData/` 子目录，递归算 app cache 时已包含）
+  Future<void> refreshCacheSize() async {
+    int total = 0;
+
+    // 1) Flutter 内存图片缓存
+    try {
+      final imageCache = PaintingBinding.instance.imageCache;
+      total += imageCache.currentSizeBytes;
+    } catch (_) {}
+
+    // 2) getTemporaryDirectory() —— Flutter / dio / webview 临时文件
+    try {
+      final tmpDir = await getTemporaryDirectory();
+      total += await _dirSize(tmpDir);
+    } catch (e) {
+      debugPrint('=== refreshCacheSize: tmp dir size failed: $e ===');
+    }
+
+    // 3) getApplicationCacheDirectory() —— 包含 cached_network_image 磁盘缓存
+    try {
+      final appCacheDir = await getApplicationCacheDirectory();
+      total += await _dirSize(appCacheDir);
+    } catch (e) {
+      debugPrint('=== refreshCacheSize: app cache dir size failed: $e ===');
+    }
+
+    cacheSizeString.value = _formatSize(bytes: total);
+  }
+
+  /// 递归算目录字节数（不跟符号链接，防循环）
+  Future<int> _dirSize(Directory dir) async {
+    int total = 0;
+    try {
+      if (!await dir.exists()) return 0;
+      await for (final entity
+          in dir.list(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          try {
+            total += await entity.length();
+          } catch (_) {}
+        }
+      }
+    } catch (e) {
+      debugPrint('=== _dirSize: ${dir.path} failed: $e ===');
+    }
+    return total;
+  }
+
+  /// 删除目录所有内容（保留目录本身）
+  Future<void> _deleteDirContents(Directory dir) async {
+    try {
+      if (!await dir.exists()) return;
+      await for (final entity
+          in dir.list(recursive: false, followLinks: false)) {
+        try {
+          if (entity is File) {
+            await entity.delete();
+          } else if (entity is Directory) {
+            await entity.delete(recursive: true);
+          }
+        } catch (e) {
+          debugPrint(
+              '=== _deleteDirContents: ${entity.path} failed: $e ===');
+        }
+      }
+    } catch (e) {
+      debugPrint('=== _deleteDirContents: ${dir.path} failed: $e ===');
+    }
   }
 
   static String _formatSize({required int bytes}) {
     final size = bytes < 0 ? 0 : bytes;
+    if (size < 1024) return '$size B';
     if (size < 1024 * 1024) {
       return '${(size / 1024.0).toStringAsFixed(1)} KB';
     }
-    return '${(size / 1024.0 / 1024.0).toStringAsFixed(1)} MB';
+    if (size < 1024 * 1024 * 1024) {
+      return '${(size / 1024.0 / 1024.0).toStringAsFixed(1)} MB';
+    }
+    return '${(size / 1024.0 / 1024.0 / 1024.0).toStringAsFixed(2)} GB';
   }
 }
