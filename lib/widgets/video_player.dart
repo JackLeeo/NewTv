@@ -150,6 +150,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// 内部追踪 native fullscreen 状态（与 mpv / OS 窗口同步）
   bool _isNativeFullscreen = false;
 
+  /// iOS / 移动端 immersive 状态（WindowFullScreen 在 iOS 是 no-op，
+  /// 所以不能用 `WindowFullScreen.instance.isActive` 同步状态机；
+  /// 改成我们自己维护的标志，作为 icon 切换 / `_onUserToggleFullscreen`
+  /// 分支判断的 source of truth）
+  bool _isImmersive = false;
+
   /// 长按倍速中：用于在 UI 上显示 "2X" 提示
   bool _isLongPressingFast = false;
 
@@ -249,9 +255,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     _startBitrateTimer();
 
     // **关键**：监听 WindowFullScreen 状态变化
-    // 让 _isNativeFullscreen 严格跟随 WindowFullScreen.isActive，
+    // 让 _isNativeFullscreen 跟随 `WindowFullScreen.isActive || _isImmersive`，
     // 消除 "setState 与 onFullScreenChanged 触发的 Obx rebuild" 之间的时序竞态，
     // 避免 "全屏按钮没切换" / "需要点两次才能退出" 等状态机错位问题。
+    // iOS 端 WindowFullScreen 是 no-op，listener 不会被自动触发，所以
+    // _enterFullScreen / _exitFullScreen 末尾会**手动**再调一次
+    // _onWindowFullScreenChanged() 兜底。
     WindowFullScreen.instance.activeNotifier.addListener(
       _onWindowFullScreenChanged,
     );
@@ -261,6 +270,11 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// - 严格在 enter()/exit() **真正完成** 后才翻转
   /// - 避免与 `_enterFullScreen` 内部的 setState/onFullScreenChanged 时序竞态
   ///
+  /// **iOS 端**：WindowFullScreen.enter() 是 no-op，activeNotifier 不会触发，
+  /// 所以 listener 也要看我们自己的 `_isImmersive` 标志才能正确同步状态。
+  /// 桌面端：WindowFullScreen.isActive 翻转 → activeNotifier → listener 触发。
+  /// 手动调 _onWindowFullScreenChanged() 也能触发（用于 _enter/_exit 末尾兜底）。
+  ///
   /// **ANGLE 黑屏问题**：
   /// `setFullScreen(true)` 内部改 `GWL_STYLE` 加 `WS_POPUP`，触发 mpv ANGLE
   /// surface 重建，与 Video widget 的 texture 通道重建存在竞态，会黑屏。
@@ -268,7 +282,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// 等 ANGLE surface 重建稳定后再同步 Video widget。
   void _onWindowFullScreenChanged() {
     if (!mounted) return;
-    final isActive = WindowFullScreen.instance.isActive;
+    // 实际"是否在 fullscreen"= 桌面端 native fullscreen OR iOS 端 immersive
+    final isActive =
+        WindowFullScreen.instance.isActive || _isImmersive;
     if (isActive != _isNativeFullscreen) {
       setState(() {
         _isNativeFullscreen = isActive;
@@ -431,10 +447,11 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   /// 调 WindowFullScreen 进入全屏
   ///
-  /// **状态机说明**：本方法**不再 setState `_isNativeFullscreen`**，
-  /// 而是通过 `WindowFullScreen.activeNotifier` listener（见
-  /// `_onWindowFullScreenChanged`）在 `WindowFullScreen.enter()` 真正完成后
-  /// 才统一翻转，避免与 detail view 的 Obx rebuild 时序竞态。
+  /// **状态机说明**：本方法会**同时**翻 `_isImmersive` 标志（iOS 路径的
+  /// 状态来源）+ 调 `WindowFullScreen.enter()`（桌面端路径）。结束后
+  /// 手动调 `_onWindowFullScreenChanged()` 兜底同步 `_isNativeFullscreen`
+  /// —— 桌面端 listener 已经被 activeNotifier 触发过一次，这里再调是
+  /// no-op；iOS 端 listener 不会被自动触发，所以手动调是必需的。
   ///
   /// **iOS 端**：除了切窗口外，**必须**调
   /// `SystemChrome.setPreferredOrientations` 强制横屏，否则系统会保持
@@ -451,12 +468,18 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     }
     // 通知 detail view 切换 immersive 模式（隐藏 AppBar、视频铺满）
     widget.onFullScreenChanged?.call(true);
+    // 标记 iOS 端 immersive 状态（先于 WindowFullScreen.enter 避免 listener
+    // 触发时 `_isImmersive` 还没翻）
+    _isImmersive = true;
     try {
       await WindowFullScreen.instance.enter();
       debugPrint('=== _enterFullScreen: WindowFullScreen enter OK ===');
     } catch (e) {
       debugPrint('=== _enterFullScreen: WindowFullScreen enter failed: $e ===');
     }
+    // 兜底同步：iOS 端必须（WindowFullScreen 不触发 activeNotifier）；
+    // 桌面端 WindowFullScreen 已经触发过 listener，这里 no-op。
+    _onWindowFullScreenChanged();
     // 确保 player 在播放（窗口 resize 可能让 mpv 进入 pause 状态）
     try {
       if (!_player.state.playing) {
@@ -467,8 +490,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   /// 调 WindowFullScreen 退出全屏
   ///
-  /// 状态机说明同 [_enterFullScreen]：`activeNotifier` listener
-  /// 在 `WindowFullScreen.exit()` 完成后才统一翻转 `_isNativeFullscreen`。
+  /// 状态机说明同 [_enterFullScreen]：先翻 `_isImmersive = false`，
+  /// 调 `WindowFullScreen.exit()`，最后手动调 `_onWindowFullScreenChanged()`
+  /// 兜底同步 iOS 端的状态。
   ///
   /// **iOS 端**：恢复允许竖屏 + 横屏。
   Future<void> _exitFullScreen() async {
@@ -476,6 +500,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     debugPrint('=== _exitFullScreen: start ===');
     // 通知 detail view 切回正常模式
     widget.onFullScreenChanged?.call(false);
+    // 先标记 iOS 端 immersive 状态已退出
+    _isImmersive = false;
     try {
       await WindowFullScreen.instance.exit();
       debugPrint('=== _exitFullScreen: WindowFullScreen exit OK ===');
@@ -492,6 +518,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     }
     // 等待窗口 resize 完成再继续
     await Future<void>.delayed(const Duration(milliseconds: 100));
+    // 兜底同步：iOS 端必须；桌面端 no-op
+    _onWindowFullScreenChanged();
     // 确保 player 在播放
     try {
       if (!_player.state.playing) {
@@ -891,22 +919,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       child: _gradientTopContainer(
         child: Row(
           children: [
-            // 返回按钮
-            _iconButton(
-              icon: Icons.chevron_left,
-              size: 22,
-              width: 40,
-              onTap: () async {
-                _scheduleHideControls();
-                // 统一走 _onUserExitFullscreen：
-                // - native 全屏：调 native exit
-                // - PiP：退出 PiP
-                // - 正常模式：调 onBack（Get.back）
-                await _onUserExitFullscreen();
-              },
-            ),
-
-            // 标题
+            // 标题占满剩余空间（之前的"返回"按钮已移除：在播放器全屏
+            // 模式下没"上一页"概念，靠 detail view 自己的 AppBar back；正常
+            // 模式点这个按钮就调到 _onUserExitFullscreen 走 Get.back，
+            // 但和 detail view 自己的 back 重复，反而容易误触）
             if (_displayTitle.isNotEmpty)
               Expanded(
                 child: Text(
@@ -1466,7 +1482,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   Widget _buildEpisodeOverlay() {
     return Positioned.fill(
-      child: Material(
+      // **重要**：用 ColoredBox 替换 Material，避免在 Stack 里
+      // 脱离 Scaffold 上下文时的灰屏渲染异常。
+      child: ColoredBox(
         color: Colors.black.withValues(alpha: 0.6),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.end,
