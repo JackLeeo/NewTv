@@ -80,7 +80,13 @@ abort('❌ 找不到 Runner group') unless runner_group
 options[:extra_swift_files].each do |bridge_filename|
   next if bridge_filename.nil? || bridge_filename.empty?
   # 跳过不存在的文件（避免 workflow 在开发期没创建该 bridge 时报错）
-  bridge_abs = File.expand_path(bridge_filename, File.join(project_dir, 'Runner'))
+  #
+  # ⚠️ 路径修正：project_dir 是 Runner.xcodeproj/ 目录（如 /path/to/ios/Runner.xcodeproj）
+  # bridge 文件在 ios/Runner/ 下（即 project_dir 的**父目录**的 Runner 子目录）
+  # 之前用 `File.join(project_dir, 'Runner')` 会拼成 Runner.xcodeproj/Runner/（不存在）
+  # 改成 `File.expand_path('Runner', File.dirname(project_dir))` 才对
+  runner_dir = File.expand_path('Runner', File.dirname(project_dir))
+  bridge_abs = File.expand_path(bridge_filename, runner_dir)
   unless File.exist?(bridge_abs)
     puts "⚠️ 跳过 #{bridge_filename}（文件不存在: #{bridge_abs}）"
     next
