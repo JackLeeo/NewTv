@@ -12,6 +12,11 @@
 // **目录约定**：
 //   - main.js 在 mainBundle 的 `nodejs-project/main.js`（workflow 嵌入）
 //   - 用户源在 <Documents>/nodejs-project/src/source/（Dart 端写）
+//
+// **注意**：
+//   - NodeMobile.h 只导出 `int node_start(int argc, char* argv[])`，没有 `node_exit`
+//   - stopNodeJS 只能重置内部状态；Node.js 进程要自然退出或用户杀进程
+//   - 参考 D:\lj\11\tvbox_project\ios\Runner\NodeJSManager.m 的 stopNodeJS 实现
 
 import Foundation
 import Flutter
@@ -102,6 +107,9 @@ import Flutter
         setenv("NODE_PATH", sourcePath, 1)
 
         // 3. 构造 argv
+        //    node_start 的 argc 是 Int32 (即 C int)；
+        //    argv 是 char** (CChar)；
+        //    Swift 数组下标需要 Int，所以同时保留 Int 版本供循环用
         let args: [String] = [
             "node",
             "--security-revert=CVE-2023-46809",
@@ -109,15 +117,16 @@ import Flutter
             "--native-port",
             String(nativePort)
         ]
-        let argc = args.count
+        let argcCount = args.count           // Int, 用于 Swift 数组下标
+        let argc: Int32 = Int32(argcCount)   // Int32, 用于 node_start API
         let argv = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(
-            capacity: argc + 1
+            capacity: argcCount + 1
         )
-        for i in 0..<argc {
+        for i in 0..<argcCount {
             let cs = (args[i] as NSString).utf8String
             argv[i] = strdup(cs)
         }
-        argv[argc] = nil
+        argv[argcCount] = nil
 
         isRunning = true
 
@@ -131,7 +140,7 @@ import Flutter
             print("[NodeJSBridge] node_start 返回 (Node.js 退出)")
 
             // 释放 argv
-            for i in 0..<argc {
+            for i in 0..<argcCount {
                 if let p = argv[i] { free(p) }
             }
             argv.deallocate()
@@ -146,13 +155,15 @@ import Flutter
     }
 
     private func stopNodeJS() {
-        // NodeMobile 提供的退出方式：
-        //   - node_exit(int code) - 让 Node.js 主循环退出
-        // 某些版本可能没有 node_exit，最粗暴的做法是 abort()
-        // 这里用 node_exit(0)（NodeMobile.h 中声明）
+        // NodeMobile.h 只导出 node_start，没有 node_exit。
+        // 实际可行的方案：
+        //   - 只 reset 内部状态（isRunning = false），Node.js 进程继续跑；
+        //   - 或者让 main.js 检测一个 IPC 信号主动退出。
+        // 当前实现：reset 状态 + 通知 Dart。
+        // iOS 进程被杀时 Node.js 也会被 SIGKILL。
+        // 参考 D:\lj\11\tvbox_project\ios\Runner\NodeJSManager.m:507-515
         if isRunning {
-            print("[NodeJSBridge] stopNodeJS: 调 node_exit(0)")
-            node_exit(0)
+            print("[NodeJSBridge] stopNodeJS: reset 内部状态（Node.js 进程仍在跑，需自然退出）")
             isRunning = false
         }
     }
