@@ -1502,7 +1502,11 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Column(
-                mainAxisSize: MainAxisSize.min,
+                // 关键：必须用 max + Expanded，否则 Flexible(loose) 拿不到有界
+                // 高度，整个 body 被压成 0 → 用户看到的就是蒙层 + 标题细条
+                // = 视觉上的"灰屏"。同时 Expanded 需要 ScrollView 拿满剩余高度
+                // 才能正确可滚。
+                mainAxisSize: MainAxisSize.max,
                 children: [
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -1519,7 +1523,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                         const Spacer(),
                         GestureDetector(
                           behavior: HitTestBehavior.opaque,
-                          onTap: () => setState(() => _showEpisodeSheet = false),
+                          onTap: () =>
+                              setState(() => _showEpisodeSheet = false),
                           child: const Padding(
                             padding: EdgeInsets.all(4),
                             child: Icon(
@@ -1532,9 +1537,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                       ],
                     ),
                   ),
-                  Flexible(
+                  Expanded(
                     child: GridView.builder(
-                      shrinkWrap: true,
                       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                       gridDelegate:
                           const SliverGridDelegateWithFixedCrossAxisCount(
@@ -1563,7 +1567,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                             child: Text(
                               widget.episodeNames[index],
                               style: TextStyle(
-                                color: isSelected ? Colors.white : Colors.white70,
+                                color: isSelected
+                                    ? Colors.white
+                                    : Colors.white70,
                                 fontSize: 13,
                               ),
                               maxLines: 1,
@@ -1610,8 +1616,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
+                // 关键：必须用 max + Expanded，否则 Flexible(loose) 拿不到有界
+                // 高度，整个 body 被压成 0 → 用户看到的就是蒙层 + 标题细条
+                // = 视觉上的"灰屏"（也就是"包含预设按钮的页面未能正确加载"）。
+                mainAxisSize: MainAxisSize.max,
                 children: [
                   Row(
                     children: [
@@ -1640,7 +1648,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  Flexible(
+                  Expanded(
                     child: SingleChildScrollView(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
