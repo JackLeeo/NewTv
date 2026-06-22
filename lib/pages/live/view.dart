@@ -119,11 +119,18 @@ class _LivePageState extends State<LivePage> {
     return Obx(() {
       final channel = _controller.currentChannel.value;
       final playUrl = channel?.currentUrl ?? '';
+      final liveVisible = _controller.isLivePageVisible.value;
       if (playUrl.isEmpty) {
+        return const SizedBox.shrink();
+      }
+      // 直播页不可见（切到其他 tab）时，**不渲染** VideoPlayerWidget，
+      // 避免 IndexedStack 中 player 持续在后台播放。
+      if (!liveVisible) {
         return const SizedBox.shrink();
       }
       return SizedBox.expand(
         child: VideoPlayerWidget(
+          player: _controller.player,
           url: playUrl,
           videoTitle: channel?.channelName ?? '',
           onError: () {

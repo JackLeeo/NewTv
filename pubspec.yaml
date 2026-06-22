@@ -26,6 +26,11 @@ dependencies:
   shared_preferences: ^2.3.4
   crypto: ^3.0.6
   archive: ^3.6.1
+  # 投屏（DLNA/UPnP 设备发现 + 视频推送）
+  # 参考 PiliPlus-main/lib/pages/dlna/view.dart 接入方式
+  # iOS 端需要 NSLocalNetworkUsageDescription + NSBonjourServices = [_ssdp._udp]
+  # 已在 ios/Runner/Info.plist 配置
+  dlna_dart: ^0.1.0
 
 dev_dependencies:
   flutter_test:

@@ -8,6 +8,7 @@ import 'services/app_state.dart';
 import 'services/nodejs_manager.dart';
 import 'pages/home/view.dart';
 import 'pages/live/view.dart';
+import 'pages/live/controller.dart';
 import 'pages/history/view.dart';
 import 'pages/favorites/view.dart';
 import 'pages/settings/view.dart';
@@ -1060,9 +1061,23 @@ class _ContentViewState extends State<ContentView>
     final isSelected = _selectedTab == index;
     return GestureDetector(
       onTap: () {
+        final prev = _selectedTab;
         setState(() {
           _selectedTab = index;
         });
+        // **关键**：切走直播 tab 时通知 LiveController 暂停 / 隐藏，
+        // 避免 IndexedStack 中 LivePage 持续在后台播放声音。
+        // 切回时恢复可见 + 继续播放。
+        if (Get.isRegistered<LiveController>()) {
+          final live = Get.find<LiveController>();
+          if (index == 1) {
+            live.isLivePageVisible.value = true;
+            live.resumePlayback();
+          } else if (prev == 1) {
+            live.isLivePageVisible.value = false;
+            live.pausePlayback();
+          }
+        }
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 300),

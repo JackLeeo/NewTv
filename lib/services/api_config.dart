@@ -262,16 +262,33 @@ class ApiConfig extends GetxController {
 
     sourceBeanList.value = newSources;
 
-    // 尝试恢复保存的主页源，如果没有则选择第一个支持的源
+    // 关键修复：当前 homeSourceBean 可能是之前 _createSpiderSourceConfig
+    // 临时创建的**占位 SourceBean**（基于 .js URL 派生），它的 key 不在
+    // newSources 中。必须把 homeSourceBean 重置到新列表的真实第一项，
+    // 否则用户在 PopupMenu 中看到的就是"基于源地址的占位线路"。
+    final currentKey = homeSourceBean.value?.key;
+    final isCurrentInNewList =
+        currentKey != null && newSources.any((s) => s.key == currentKey);
+
+    // 优先恢复保存的主页源
     await _restoreHomeSource(newSources);
-    if (homeSourceBean.value == null) {
+
+    if (!isCurrentInNewList) {
+      // 当前 homeSourceBean 是过时占位（key 不在新列表中），重置为新列表第一项
+      homeSourceBean.value = newSources
+              .where((s) => s.isSupportedInSwift)
+              .firstOrNull ??
+          newSources.firstOrNull;
+    } else if (homeSourceBean.value == null) {
+      // _restoreHomeSource 也没找到（保存的 key 在新列表中不存在），
+      // 兜底选第一个支持的
       homeSourceBean.value = newSources
               .where((s) => s.isSupportedInSwift)
               .firstOrNull ??
           newSources.firstOrNull;
     }
 
-    print('[ApiConfig] 从 Spider /config 更新了 ${newSources.length} 个线路');
+    print('[ApiConfig] 从 Spider /config 更新了 ${newSources.length} 个线路，默认 homeSourceBean=${homeSourceBean.value?.key}');
   }
 
   // ============================================================
@@ -450,15 +467,27 @@ class ApiConfig extends GetxController {
       }
       sourceBeanList.value = sources;
 
-      // 设置默认主页源：优先选择非Spider源，如果没有则选择第一个Spider源
-      await _restoreHomeSource(sources);
-      if (homeSourceBean.value == null) {
-        homeSourceBean.value = sources
-                .where((s) => !s.isSpiderSource && s.isSupportedInSwift)
-                .firstOrNull ??
-            sources.where((s) => !s.isSpiderSource).firstOrNull ??
-            sources.where((s) => s.isSupportedInSwift).firstOrNull ??
-            sources.firstOrNull;
+      // 关键修复：如果当前解析结果包含 Spider 源（type=3），
+      // 那么 sources 列表里那个 SourceBean 是 _createSpiderSourceConfig
+      // 基于 .js URL 派生的**占位** SourceBean（name='Spider源(host)'），
+      // 真正的站点列表需要等 NodeJS 启动 + getCatConfig 后才会出现。
+      // 此处**不**把占位 SourceBean 设为 homeSourceBean，避免
+      // PopupMenu 显示"基于源地址的占位线路"。等 updateSourceBeansFromSpiderConfig
+      // 在 _fetchSpiderConfig 完成后用真实 sites 列表重置 homeSourceBean。
+      final hasSpiderSource = sources.any((s) => s.isSpiderSource);
+      if (hasSpiderSource) {
+        print('[ApiConfig] 当前 config 含 Spider 源，homeSourceBean 等待 getCatConfig 完成后设置');
+      } else {
+        // 普通源：按优先级选第一个
+        await _restoreHomeSource(sources);
+        if (homeSourceBean.value == null) {
+          homeSourceBean.value = sources
+                  .where((s) => !s.isSpiderSource && s.isSupportedInSwift)
+                  .firstOrNull ??
+              sources.where((s) => !s.isSpiderSource).firstOrNull ??
+              sources.where((s) => s.isSupportedInSwift).firstOrNull ??
+              sources.firstOrNull;
+        }
       }
 
       // 解析解析器列表

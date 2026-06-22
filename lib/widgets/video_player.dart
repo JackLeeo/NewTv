@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -147,6 +148,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   /// 内部追踪 native fullscreen 状态（与 mpv / OS 窗口同步）
   bool _isNativeFullscreen = false;
+
+  /// 长按倍速中：用于在 UI 上显示 "2X" 提示
+  bool _isLongPressingFast = false;
 
   /// 用于强制重建 Video widget，绕过 ANGLE surface 失效导致的黑屏
   int _videoRebuildKey = 0;
@@ -430,9 +434,20 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// 而是通过 `WindowFullScreen.activeNotifier` listener（见
   /// `_onWindowFullScreenChanged`）在 `WindowFullScreen.enter()` 真正完成后
   /// 才统一翻转，避免与 detail view 的 Obx rebuild 时序竞态。
+  ///
+  /// **iOS 端**：除了切窗口外，**必须**调
+  /// `SystemChrome.setPreferredOrientations` 强制横屏，否则系统会保持
+  /// 竖屏全屏（视频左右黑边）。
   Future<void> _enterFullScreen() async {
     if (_isNativeFullscreen) return;
     debugPrint('=== _enterFullScreen: start ===');
+    // iOS 端：先强制横屏（必须在通知 detail view 切换 immersive 之前）
+    if (Platform.isIOS) {
+      await SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    }
     // 通知 detail view 切换 immersive 模式（隐藏 AppBar、视频铺满）
     widget.onFullScreenChanged?.call(true);
     try {
@@ -453,6 +468,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   ///
   /// 状态机说明同 [_enterFullScreen]：`activeNotifier` listener
   /// 在 `WindowFullScreen.exit()` 完成后才统一翻转 `_isNativeFullscreen`。
+  ///
+  /// **iOS 端**：恢复允许竖屏 + 横屏。
   Future<void> _exitFullScreen() async {
     if (!_isNativeFullscreen) return;
     debugPrint('=== _exitFullScreen: start ===');
@@ -463,6 +480,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       debugPrint('=== _exitFullScreen: WindowFullScreen exit OK ===');
     } catch (e) {
       debugPrint('=== _exitFullScreen: WindowFullScreen exit failed: $e ===');
+    }
+    // iOS 端：恢复允许竖屏 + 横屏
+    if (Platform.isIOS) {
+      await SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.portrait,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
     }
     // 等待窗口 resize 完成再继续
     await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -717,110 +742,116 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
+        // **关键**：把长按手势拆到**外层** GestureDetector，
+        // 避免与内层 onTap / onDoubleTap 在手势竞技场中相互抢占
+        // （Flutter 默认会让长按等待双击判定窗口结束，从而失效）。
         return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          // 单击：切换控制条
-          onTap: _toggleControls,
-          // 双击：左侧快退、右侧快进、中间播放/暂停
-          onDoubleTapDown: (details) {
-            final x = details.localPosition.dx;
-            if (x < width / 4) {
-              _seekBy(-_seekStep, isLeft: true);
-            } else if (x > width * 3 / 4) {
-              _seekBy(_seekStep, isLeft: false);
-            } else {
-              _togglePlayPause();
-            }
-          },
-          onDoubleTap: () {},
-          // 长按：2 倍速
+          behavior: HitTestBehavior.translucent,
+          // 外层只处理长按：长按 2 倍速
           onLongPressStart: (_) {
             if (_isLocked) return;
             _player.setRate(_playbackSpeed * 2);
+            setState(() => _isLongPressingFast = true);
           },
           onLongPressEnd: (_) {
             if (_isLocked) return;
             _player.setRate(_playbackSpeed);
+            setState(() => _isLongPressingFast = false);
           },
-          // 水平/垂直拖动：水平拖动 = 拖动进度，垂直拖动 = 音量/亮度
-          onPanStart: (details) {
-            if (_isLocked) return;
-            _gestureInitialVolume = _volume;
-            _gestureInitialBrightness = _brightness;
-            _gestureSeekTemp = _position.inMilliseconds.toDouble();
-            _gesturePanStartPosition = details.localPosition;
-            _gesturePanAxis = null;
-            _scheduleHideControls();
-          },
-          onPanUpdate: (details) {
-            if (_isLocked) return;
-            final dx = details.localPosition.dx - _gesturePanStartPosition.dx;
-            final dy = details.localPosition.dy - _gesturePanStartPosition.dy;
-            final absDx = dx.abs();
-            final absDy = dy.abs();
-
-            // 第一次确定手势方向
-            _gesturePanAxis ??=
-                absDx > absDy * 1.5 ? PanAxis.horizontal : PanAxis.vertical;
-
-            if (_gesturePanAxis == PanAxis.horizontal) {
-              if (_duration > Duration.zero) {
-                final totalMs = _duration.inMilliseconds.toDouble();
-                // 屏幕宽度对应整个 duration 的 30%
-                final scale = totalMs * 0.3;
-                final deltaMs = (dx / width) * scale;
-                _gestureSeekTemp =
-                    (_gestureSeekTemp + deltaMs).clamp(0.0, totalMs);
-                final newPos = Duration(
-                  milliseconds: _gestureSeekTemp.round(),
-                );
-                setState(() {
-                  _isDragging = true;
-                  _dragValue = _gestureSeekTemp;
-                  _gestureHorizontalHint =
-                      '${_gestureSeekTemp > _position.inMilliseconds ? '+' : ''}'
-                      '${(newPos.inSeconds - _position.inSeconds)}秒'
-                      '  ${_formatDuration(newPos)}';
-                });
+          // 内层处理单击/双击/拖动
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _toggleControls,
+            onDoubleTapDown: (details) {
+              final x = details.localPosition.dx;
+              if (x < width / 4) {
+                _seekBy(-_seekStep, isLeft: true);
+              } else if (x > width * 3 / 4) {
+                _seekBy(_seekStep, isLeft: false);
+              } else {
+                _togglePlayPause();
               }
-            } else {
-              // 垂直：左侧亮度，右侧音量
-              if (_gesturePanStartPosition.dx < width / 2) {
-                final newB = (_gestureInitialBrightness - dy / constraints.maxHeight)
-                    .clamp(0.0, 1.0);
-                _setBrightness(newB);
+            },
+            onDoubleTap: () {},
+            onPanStart: (details) {
+              if (_isLocked) return;
+              _gestureInitialVolume = _volume;
+              _gestureInitialBrightness = _brightness;
+              _gestureSeekTemp = _position.inMilliseconds.toDouble();
+              _gesturePanStartPosition = details.localPosition;
+              _gesturePanAxis = null;
+              _scheduleHideControls();
+            },
+            onPanUpdate: (details) {
+              if (_isLocked) return;
+              final dx = details.localPosition.dx - _gesturePanStartPosition.dx;
+              final dy = details.localPosition.dy - _gesturePanStartPosition.dy;
+              final absDx = dx.abs();
+              final absDy = dy.abs();
+
+              // 第一次确定手势方向
+              _gesturePanAxis ??=
+                  absDx > absDy * 1.5 ? PanAxis.horizontal : PanAxis.vertical;
+
+              if (_gesturePanAxis == PanAxis.horizontal) {
+                if (_duration > Duration.zero) {
+                  final totalMs = _duration.inMilliseconds.toDouble();
+                  // 屏幕宽度对应整个 duration 的 30%
+                  final scale = totalMs * 0.3;
+                  final deltaMs = (dx / width) * scale;
+                  _gestureSeekTemp =
+                      (_gestureSeekTemp + deltaMs).clamp(0.0, totalMs);
+                  final newPos = Duration(
+                    milliseconds: _gestureSeekTemp.round(),
+                  );
+                  setState(() {
+                    _isDragging = true;
+                    _dragValue = _gestureSeekTemp;
+                    _gestureHorizontalHint =
+                        '${_gestureSeekTemp > _position.inMilliseconds ? '+' : ''}'
+                        '${(newPos.inSeconds - _position.inSeconds)}秒'
+                        '  ${_formatDuration(newPos)}';
+                  });
+                }
+              } else {
+                // 垂直：左侧亮度，右侧音量
+                if (_gesturePanStartPosition.dx < width / 2) {
+                  final newB = (_gestureInitialBrightness - dy / constraints.maxHeight)
+                      .clamp(0.0, 1.0);
+                  _setBrightness(newB);
+                  setState(() {
+                    _showBrightnessIndicator = true;
+                    _showVolumeIndicator = false;
+                  });
+                } else {
+                  final newV = (_gestureInitialVolume - dy / constraints.maxHeight)
+                      .clamp(0.0, 1.0);
+                  setState(() {
+                    _setVolume(newV);
+                    _showVolumeIndicator = true;
+                    _showBrightnessIndicator = false;
+                  });
+                }
+                _showIndicatorLater();
+              }
+            },
+            onPanEnd: (_) {
+              if (_isLocked) return;
+              if (_gesturePanAxis == PanAxis.horizontal) {
+                _seekTo(Duration(milliseconds: _gestureSeekTemp.round()));
                 setState(() {
-                  _showBrightnessIndicator = true;
-                  _showVolumeIndicator = false;
+                  _isDragging = false;
+                  _gestureHorizontalHint = '';
                 });
               } else {
-                final newV = (_gestureInitialVolume - dy / constraints.maxHeight)
-                    .clamp(0.0, 1.0);
                 setState(() {
-                  _setVolume(newV);
-                  _showVolumeIndicator = true;
+                  _showVolumeIndicator = false;
                   _showBrightnessIndicator = false;
                 });
               }
-              _showIndicatorLater();
-            }
-          },
-          onPanEnd: (_) {
-            if (_isLocked) return;
-            if (_gesturePanAxis == PanAxis.horizontal) {
-              _seekTo(Duration(milliseconds: _gestureSeekTemp.round()));
-              setState(() {
-                _isDragging = false;
-                _gestureHorizontalHint = '';
-              });
-            } else {
-              setState(() {
-                _showVolumeIndicator = false;
-                _showBrightnessIndicator = false;
-              });
-            }
-            _gesturePanAxis = null;
-          },
+              _gesturePanAxis = null;
+            },
+          ),
         );
       },
     );
@@ -923,6 +954,19 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
               onTap: () {
                 _scheduleHideControls();
                 _togglePiP();
+              },
+            ),
+
+            // 投屏（AirPlay / DLNA 入口）
+            // iOS 端调原生 AVRoutePickerView，弹出系统 AirPlay 选择器
+            // 其他平台暂不实现，提示用户
+            _iconButton(
+              icon: Icons.cast,
+              size: 20,
+              width: 36,
+              onTap: () {
+                _scheduleHideControls();
+                _toggleCast();
               },
             ),
 
@@ -1526,7 +1570,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   Widget _buildSettingsSheet() {
     return Positioned.fill(
-      child: Material(
+      // **重要**：用 ColoredBox 替换 Material，避免在 Stack 里
+      // 脱离 Scaffold 上下文时的灰屏渲染异常。
+      child: ColoredBox(
         color: Colors.black.withValues(alpha: 0.6),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.end,
@@ -1639,6 +1685,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   // ============================================================
 
   Future<void> _togglePiP() async {
+    // iOS 端：当前 Flutter 端没有原生 AVPictureInPictureController 实现，
+    // 直接调 VideoPlayerPip.toggle() 会因为 unsupported platform 静默失败。
+    // 给出明确提示让用户知道原因。
+    if (Platform.isIOS) {
+      _showMessage('iOS 端画中画：当前版本暂未集成 AVPictureInPictureController。\n'
+          '如需小窗播放，请先退出全屏并手动从控制中心选择 AirPlay 设备。');
+      return;
+    }
     // 互斥：如果当前是全屏状态，先 await 退出全屏再进入 PiP
     if (WindowFullScreen.instance.isActive || _isNativeFullscreen) {
       await _exitFullScreen();
@@ -1647,6 +1701,48 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     // 附加当前 Player 到 PiP 模块（不创建新实例，保留播放状态）
     VideoPlayerPip.instance.attachPlayer(_player);
     await VideoPlayerPip.instance.toggle();
+  }
+
+  /// 投屏入口（DLNA/UPnP）
+  ///
+  /// **实现**：参考 PiliPlus-main/lib/pages/dlna/view.dart，使用
+  /// `dlna_dart: ^0.1.0` 库（纯 Dart 实现，跨 iOS / Android / macOS / Windows / Linux）。
+  ///
+  /// 流程：
+  /// 1. 跳到 DLNAPage（路由 /dlna）
+  /// 2. DLNAManager.start() 扫描局域网内 DLNA/UPnP 设备（30 秒超时）
+  /// 3. 用户选设备 → device.setUrl(playUrl, title: videoTitle) + device.play()
+  /// 4. DMR（智能电视 / 投影仪 / 音箱）开始播放
+  ///
+  /// **iOS 端权限**：需要 NSLocalNetworkUsageDescription + NSBonjourServices
+  /// 已配置在 ios/Runner/Info.plist。
+  Future<void> _toggleCast() async {
+    final playUrl = _player.state.playlist.isNotEmpty
+        ? _player.state.playlist.medias.last.uri
+        : widget.url;
+    if (playUrl.isEmpty) {
+      _showMessage('投屏：当前没有可投屏的视频地址');
+      return;
+    }
+    Get.toNamed(
+      '/dlna',
+      parameters: {
+        'url': playUrl,
+        'title': _displayTitle.isNotEmpty ? _displayTitle : (widget.videoTitle ?? ''),
+      },
+    );
+  }
+
+  /// 用 ScaffoldMessenger 显示一条提示
+  void _showMessage(String text) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger.showSnackBar(SnackBar(
+      content: Text(text),
+      duration: const Duration(seconds: 3),
+      backgroundColor: Colors.black87,
+      behavior: SnackBarBehavior.floating,
+    ));
   }
 
   // ============================================================

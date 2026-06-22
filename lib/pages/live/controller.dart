@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:get/get.dart';
+import 'package:media_kit/media_kit.dart';
 import '../../models/live_models.dart';
 import '../../services/api_config.dart';
 
@@ -12,6 +13,20 @@ class LiveController extends GetxController {
   final isLoading = false.obs;
   final showChannelList = false.obs;
 
+  /// 直播页是否可见（由 ContentView tab 切换驱动）：
+  /// 不可见时自动 pause 播放器，避免在 IndexedStack 中
+  /// 切到其他 tab 后声音还在后台播放的问题。
+  final isLivePageVisible = true.obs;
+
+  /// 直播播放器（懒创建）：抽到 controller 持有，
+  /// 便于在页面不可见时主动 pause / 切回时 resume，
+  /// 而不必重建 VideoPlayerWidget。
+  Player? _player;
+  Player get player {
+    _player ??= Player(configuration: const PlayerConfiguration(title: 'TVBox Live'));
+    return _player!;
+  }
+
   StreamSubscription? _channelGroupsSubscription;
 
   @override
@@ -23,7 +38,28 @@ class LiveController extends GetxController {
   @override
   void onClose() {
     _channelGroupsSubscription?.cancel();
+    // 释放 player
+    try {
+      _player?.dispose();
+    } catch (_) {}
+    _player = null;
     super.onClose();
+  }
+
+  /// 暂停直播播放（不释放 player，保留播放位置）
+  void pausePlayback() {
+    try {
+      _player?.pause();
+    } catch (_) {}
+  }
+
+  /// 恢复直播播放
+  void resumePlayback() {
+    try {
+      if (_player != null && currentChannel.value != null) {
+        _player?.play();
+      }
+    } catch (_) {}
   }
 
   void loadChannels() {
@@ -42,6 +78,14 @@ class LiveController extends GetxController {
 
   void selectChannel(LiveChannelItem channel) {
     currentChannel.value = channel;
+    // 切换频道时主动 open media 到 player，避免 LivePage 还没 build 时
+    // video_player 内部还是用上一个 url。
+    final url = channel.currentUrl;
+    if (url.isNotEmpty) {
+      try {
+        player.open(Media(url));
+      } catch (_) {}
+    }
     _loadEPG(channel);
   }
 

@@ -26,6 +26,9 @@ require 'pathname'
 options = {
   xcframework: nil,
   pbxproj: 'Runner.xcodeproj/project.pbxproj',
+  # 默认只注册 NodeJSBridge.swift（其它 Swift bridge 在需要时通过
+  # --extra-swift 显式传入）
+  extra_swift_files: %w[NodeJSBridge.swift],
 }
 
 OptionParser.new do |opts|
@@ -34,6 +37,9 @@ OptionParser.new do |opts|
   end
   opts.on('--pbxproj PATH', 'project.pbxproj 路径（默认 Runner.xcodeproj/project.pbxproj）') do |v|
     options[:pbxproj] = v
+  end
+  opts.on('--extra-swift x,y,z', Array, '额外的 Swift 文件列表（默认 NodeJSBridge.swift）') do |v|
+    options[:extra_swift_files] = v
   end
 end.parse!
 
@@ -64,14 +70,26 @@ runner_target = project.targets.find { |t| t.name == 'Runner' }
 abort('❌ 找不到 Runner target') unless runner_target
 
 # ============================================================
-# 1. 加 NodeJSBridge.swift 到 Runner group + Sources
+# 1. 加 Swift bridge 文件到 Runner group + Sources
+#    （默认 NodeJSBridge.swift，可通过 --extra-swift 添加更多）
 # ============================================================
 
-bridge_filename = 'NodeJSBridge.swift'
+runner_group = project.main_group['Runner']
+abort('❌ 找不到 Runner group') unless runner_group
 
-unless runner_target.source_build_phase.files_references.any? { |ref| ref&.path == bridge_filename }
-  runner_group = project.main_group['Runner']
-  abort('❌ 找不到 Runner group') unless runner_group
+options[:extra_swift_files].each do |bridge_filename|
+  next if bridge_filename.nil? || bridge_filename.empty?
+  # 跳过不存在的文件（避免 workflow 在开发期没创建该 bridge 时报错）
+  bridge_abs = File.expand_path(bridge_filename, File.join(project_dir, 'Runner'))
+  unless File.exist?(bridge_abs)
+    puts "⚠️ 跳过 #{bridge_filename}（文件不存在: #{bridge_abs}）"
+    next
+  end
+
+  if runner_target.source_build_phase.files_references.any? { |ref| ref&.path == bridge_filename }
+    puts "✅ #{bridge_filename} 已在 Runner target 中"
+    next
+  end
 
   bridge_ref = runner_group.files.find { |f| f.path == bridge_filename }
   unless bridge_ref
@@ -80,8 +98,6 @@ unless runner_target.source_build_phase.files_references.any? { |ref| ref&.path 
   end
   runner_target.source_build_phase.add_file_reference(bridge_ref, true)
   puts "✅ 已加 #{bridge_filename} 到 Runner target"
-else
-  puts "✅ #{bridge_filename} 已在 Runner target 中"
 end
 
 # ============================================================
