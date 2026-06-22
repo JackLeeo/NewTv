@@ -234,11 +234,16 @@ jobs:
         # ldid -S = ad-hoc 伪签名（TrollStore 接受）
         # 主 app + 所有 framework + 所有 dylib 都要签
         # 关键：NodeMobile.framework 内的二进制也必须签
+        #
+        # ⚠️ 不要 `ldid -S "$APP_PATH"`：APP_PATH 是 .app 目录，ldid 要 Mach-O 二进制
+        #    会报 `ldid.cpp(1455): _assert(): end >= size - 0x10`
+        #    必须指到 .app 内的主可执行文件 $APP_PATH/$BUNDLE_NAME
         run: |
           set -e
           APP_PATH=${{ steps.locate.outputs.APP_PATH }}
-          echo "=== Signing main app ==="
-          ldid -S "$APP_PATH"
+          APP_EXEC="$APP_PATH/$BUNDLE_NAME"
+          echo "=== Signing main executable: $APP_EXEC ==="
+          ldid -S "$APP_EXEC"
           if [ -d "$APP_PATH/Frameworks" ]; then
             for FRAMEWORK in "$APP_PATH/Frameworks/"*.framework; do
               if [ -d "$FRAMEWORK" ]; then
