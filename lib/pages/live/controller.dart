@@ -81,9 +81,9 @@ class LiveController extends GetxController {
     // 切换频道时主动 open media 到 player，避免 LivePage 还没 build 时
     // video_player 内部还是用上一个 url。
     final url = channel.currentUrl;
-    if (url.isNotEmpty) {
+    if (url != null && url.isNotEmpty) {
       try {
-        player.open(Media(url));
+        player.open(Media(url!));
       } catch (_) {}
     }
     _loadEPG(channel);

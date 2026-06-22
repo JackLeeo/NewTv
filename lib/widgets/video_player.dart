@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:get/get.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:window_manager/window_manager.dart' show DragToMoveArea;
@@ -484,7 +485,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     // iOS 端：恢复允许竖屏 + 横屏
     if (Platform.isIOS) {
       await SystemChrome.setPreferredOrientations(const [
-        DeviceOrientation.portrait,
+        DeviceOrientation.portraitUp,
         DeviceOrientation.landscapeLeft,
         DeviceOrientation.landscapeRight,
       ]);
@@ -1717,7 +1718,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// **iOS 端权限**：需要 NSLocalNetworkUsageDescription + NSBonjourServices
   /// 已配置在 ios/Runner/Info.plist。
   Future<void> _toggleCast() async {
-    final playUrl = _player.state.playlist.isNotEmpty
+    final playUrl = _player.state.playlist.medias.isNotEmpty
         ? _player.state.playlist.medias.last.uri
         : widget.url;
     if (playUrl.isEmpty) {
