@@ -43,6 +43,14 @@ namespace TVBoxInstaller
         // 内嵌资源名（由 csc /resource:app.zip,app.zip 提供）
         private const string EmbeddedZipResource = "app.zip";
 
+        // Node.js 运行时下载 URL（与 Flutter 端 assets/nodejs-runtime/version.json 保持一致）
+        // 镜像：npmmirror.com，版本：v20.11.1
+        private const string NodeDownloadUrl = "https://npmmirror.com/mirrors/node/v20.11.1/node-v20.11.1-win-x64.zip";
+        private const string NodeExeInZip = "node-v20.11.1-win-x64/node.exe";
+        // Flutter 端 SharedPreferences 用的包名（pubspec.yaml name + windows bundleId）
+        // 实际写到 %LOCALAPPDATA%\com.example\piliplus\
+        private const string AppBundleId = @"com.example\piliplus";
+
         public MainForm()
         {
             InitializeUI();
@@ -355,7 +363,36 @@ namespace TVBoxInstaller
                 }
             }
 
-            // 4) 创建快捷方式
+            // 4) 下载并预装 Node.js 运行时（让用户首次启动即可用，省去首次下载）
+            //    - 失败不阻塞安装（App 启动时会再下载）
+            //    - 进度通过 BackgroundWorker.ReportProgress 推到 UI
+            worker.ReportProgress(80, "正在准备 Node.js 运行时目录...");
+            string appSupportDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                AppBundleId
+            );
+            string nodeRuntimeDir = Path.Combine(appSupportDir, "node-runtime");
+            string nodeExeDest = Path.Combine(nodeRuntimeDir, "node.exe");
+            bool nodeAlreadyReady = false;
+            try
+            {
+                if (File.Exists(nodeExeDest))
+                {
+                    var existing = new FileInfo(nodeExeDest);
+                    if (existing.Length > 1000000)
+                    {
+                        worker.ReportProgress(82, "Node.js 已存在，跳过下载");
+                        nodeAlreadyReady = true;
+                    }
+                }
+            }
+            catch { }
+            if (!nodeAlreadyReady)
+            {
+                TryPrefetchNodeJS(worker, nodeRuntimeDir, nodeExeDest);
+            }
+
+            // 5) 创建快捷方式
             worker.ReportProgress(88, "正在创建快捷方式...");
             if (startMenuShortcutCheckBox.Checked)
             {
@@ -435,6 +472,62 @@ namespace TVBoxInstaller
             catch (Exception ex)
             {
                 MessageBox.Show(this, "启动失败：" + ex.Message, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        /// 在安装时尝试预下载 Node.js 运行时
+        /// - 用 HttpWebRequest 同步下载 zip + ZipArchive 解压出 node.exe
+        /// - 失败不抛（只记录），App 启动时会再次尝试
+        private void TryPrefetchNodeJS(BackgroundWorker worker, string nodeRuntimeDir, string nodeExeDest)
+        {
+            try
+            {
+                worker.ReportProgress(83, "正在下载 Node.js 运行时（约 28 MB）...");
+                if (!Directory.Exists(nodeRuntimeDir))
+                {
+                    Directory.CreateDirectory(nodeRuntimeDir);
+                }
+                string tmpZip = Path.Combine(Path.GetTempPath(), "node-v20.11.1-prefetch.zip");
+
+                // 同步下载
+                using (var client = new System.Net.WebClient())
+                {
+                    client.DownloadFile(NodeDownloadUrl, tmpZip);
+                }
+
+                worker.ReportProgress(85, "正在解压 Node.js...");
+                using (var zip = ZipFile.OpenRead(tmpZip))
+                {
+                    var entry = zip.GetEntry(NodeExeInZip);
+                    if (entry == null)
+                    {
+                        // zip 内容变化，列出前几个文件名方便排查
+                        var names = new System.Text.StringBuilder();
+                        int n = 0;
+                        foreach (var e in zip.Entries)
+                        {
+                            if (n >= 3) break;
+                            names.Append(e.FullName).Append(", ");
+                            n++;
+                        }
+                        throw new InvalidOperationException("zip 中未找到 " + NodeExeInZip + "，首几个文件: " + names);
+                    }
+                    // 写到临时文件再 rename 替换（避免写入过程中断电损坏原文件）
+                    string tmpExe = nodeExeDest + ".tmp";
+                    entry.ExtractToFile(tmpExe, true);
+                    if (File.Exists(nodeExeDest)) File.Delete(nodeExeDest);
+                    File.Move(tmpExe, nodeExeDest);
+                }
+
+                // 清理临时 zip
+                try { File.Delete(tmpZip); } catch { }
+                worker.ReportProgress(87, "Node.js 预装完成");
+            }
+            catch (Exception ex)
+            {
+                // 不阻塞安装：App 启动时会再下载
+                worker.ReportProgress(87, "Node.js 预装失败（首次启动时会重试）: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("TryPrefetchNodeJS failed: " + ex);
             }
         }
     }

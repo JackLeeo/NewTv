@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'common/theme.dart';
 import 'common/constants.dart';
 import 'services/app_state.dart';
+import 'services/nodejs_manager.dart';
 import 'pages/home/view.dart';
 import 'pages/live/view.dart';
 import 'pages/history/view.dart';
@@ -164,6 +165,59 @@ class _ContentViewState extends State<ContentView>
   // 加载视图 - 对应 Swift loadingView
   // ============================================================
 
+  /// Node.js 下载进度条
+  Widget _buildNodeJSDownloadProgress() {
+    final mgr = NodeJSManager.instance;
+    return ValueListenableBuilder<double?>(
+      valueListenable: mgr.nodeDownloadProgress,
+      builder: (ctx, progress, _) {
+        final p = progress ?? 0.0;
+        return SizedBox(
+          width: 320,
+          child: Column(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: p > 0 ? p : null,
+                  minHeight: 6,
+                  backgroundColor: Colors.white.withValues(alpha: 0.1),
+                  valueColor: const AlwaysStoppedAnimation<Color>(
+                      AppTheme.accentColor),
+                ),
+              ),
+              const SizedBox(height: 8),
+              ValueListenableBuilder<String?>(
+                valueListenable: mgr.nodeDownloadStatus,
+                builder: (ctx2, status, _) {
+                  String text;
+                  if (status == 'downloading') {
+                    text = '下载中... ${(p * 100).toStringAsFixed(0)}%';
+                  } else if (status == 'extracting') {
+                    text = '解压中...';
+                  } else if (status == 'done') {
+                    text = '完成！';
+                  } else if (status == 'error') {
+                    text = '下载失败';
+                  } else {
+                    text = '准备下载...';
+                  }
+                  return Text(
+                    text,
+                    style: const TextStyle(
+                      color: AppTheme.textTertiary,
+                      fontSize: AppTheme.fontCaption,
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildLoadingView() {
     final appState = Get.find<AppState>();
 
@@ -226,9 +280,12 @@ class _ContentViewState extends State<ContentView>
                 if (phase.isLoading)
                   Column(
                     children: [
-                      const CircularProgressIndicator(
-                        color: AppTheme.accentColor,
-                      ),
+                      if (phase == LoadingPhase.downloadingNodeJS)
+                        _buildNodeJSDownloadProgress()
+                      else
+                        const CircularProgressIndicator(
+                          color: AppTheme.accentColor,
+                        ),
                       const SizedBox(height: AppTheme.spacingLG),
                       Text(
                         phase.description,

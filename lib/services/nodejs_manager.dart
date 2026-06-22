@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
 
@@ -11,28 +13,46 @@ import 'package:path_provider/path_provider.dart';
 /// 运行本地 HTTP 服务器接收 Node.js 的通知
 ///
 /// **打包策略**：
-/// - Node.js 运行时（`node.exe`，v20.11.1）通过 `assets/nodejs-runtime/node.exe`
-///   嵌入到 app，首次启动时从 `rootBundle` 复制到
+/// - **Node.js 运行时（node.exe）不内嵌到安装包**。首次启动时由
+///   [NodeJSManager] 从 [version.json] 指定的镜像下载 zip 包，解压到
 ///   `getApplicationSupportDirectory()/node-runtime/node.exe`
+///   → 极大减小安装包体积（少 ~70 MB）+ 仓库体积
 /// - `main.js` 通过 `assets/nodejs-project/dist/main.js` 嵌入，首次启动时
 ///   复制到 `getApplicationSupportDirectory()/nodejs/main.js`
 /// - 用户下载的源（`index.js` + `index.config.js`）保存到
 ///   `getApplicationDocumentsDirectory()/nodejs/source/`
-/// - 这样 **目标电脑不需要安装 Node.js**，完全自包含
+/// - 安装器（Installer.cs）也支持在安装时下载 Node.js，作为"装完即用"的兜底
 class NodeJSManager {
   static final NodeJSManager _instance = NodeJSManager._internal();
   static NodeJSManager get instance => _instance;
 
   static const int _maxStartupWaitSeconds = 30;
 
-  /// rootBundle 中的 Node.js 资源路径
-  static const String _bundledNodeExe = 'assets/nodejs-runtime/node.exe';
+  /// rootBundle 中的 Node.js 元数据
+  static const String _bundledNodeVersionMeta =
+      'assets/nodejs-runtime/version.json';
+
+  /// rootBundle 中的 main.js
   static const String _bundledMainJs = 'assets/nodejs-project/dist/main.js';
 
-  /// 目标电脑不需要 Node.js 运行时：
-  /// - true: 完全自包含（从 rootBundle 复制 node.exe）—— **当前模式**
-  /// - false: 假设系统已安装 Node.js，使用 PATH 里的 node
-  static const bool _useBundledNodeRuntime = true;
+  /// Node.js 下载配置
+  NodeDownloadConfig? _nodeDownloadConfig;
+  NodeDownloadConfig? get nodeDownloadConfig => _nodeDownloadConfig;
+
+  /// Node.js 下载进度（0.0 ~ 1.0）。UI 可以监听这个 ValueNotifier 显示进度
+  /// - null = 还没开始
+  /// - 0.0 = 开始
+  /// - 1.0 = 完成
+  /// - 0.0 再次 = 重新开始（用于多次下载）
+  final ValueNotifier<double?> nodeDownloadProgress = ValueNotifier(null);
+
+  /// Node.js 下载状态（用于 UI 弹 dialog）
+  /// - null = 空闲
+  /// - 'downloading' = 下载中
+  /// - 'extracting' = 解压中
+  /// - 'done' = 完成
+  /// - 'error' = 出错
+  final ValueNotifier<String?> nodeDownloadStatus = ValueNotifier(null);
 
   bool _isRunning = false;
   bool _isNodeReady = false;
@@ -106,34 +126,181 @@ class NodeJSManager {
   }
 
   // ============================================================
-  // 资源准备（从 rootBundle 复制到磁盘）
+  // 资源准备（main.js / node.exe 缺失则下载）
   // ============================================================
 
-  /// 从 rootBundle 解压 node.exe 到本地磁盘
-  /// - 仅当 [_useBundledNodeRuntime] = true 时执行
-  /// - 用文件大小+修改时间做缓存检查，避免每次启动都复制
+  /// 加载 Node.js 版本元信息（从 rootBundle）
+  Future<NodeDownloadConfig> _loadNodeDownloadConfig() async {
+    if (_nodeDownloadConfig != null) return _nodeDownloadConfig!;
+    final raw = await rootBundle.loadString(_bundledNodeVersionMeta);
+    final json = jsonDecode(raw) as Map<String, dynamic>;
+    final cfg = NodeDownloadConfig.fromJson(json);
+    _nodeDownloadConfig = cfg;
+    return cfg;
+  }
+
+  /// 公开版本，供 UI 层访问下载配置
+  Future<NodeDownloadConfig> loadNodeDownloadConfigPublic() async {
+    return _loadNodeDownloadConfig();
+  }
+
+  /// 确保 Node.js 运行时已就绪
+  ///
+  /// 流程：
+  /// 1. 读 `version.json` 获取下载 URL + zip 内 node.exe 的相对路径
+  /// 2. 检查 `<AppSupport>/node-runtime/node.exe` 是否存在且大小合理
+  ///    → 存在：直接返回路径（秒开）
+  ///    → 不存在：调 [downloadAndExtractNodeRuntime] 下载 + 解压
+  ///
+  /// 注意：**不要在 UI 主线程直接调**，需要先弹下载进度 dialog。
+  /// 推荐调用方：
+  /// ```dart
+  /// if (await NodeJSManager.instance.isNodeRuntimeInstalled()) {
+  ///   // 已装，直接启动
+  ///   await NodeJSManager.instance.startNodeJS();
+  /// } else {
+  ///   // 弹下载 dialog
+  ///   final ok = await showDownloadDialog(...);
+  ///   if (ok) await NodeJSManager.instance.startNodeJS();
+  /// }
+  /// ```
   Future<String> _ensureNodeRuntimeReady() async {
-    if (!_useBundledNodeRuntime) {
-      // 不使用自包含 Node.js：返回 'node'（依赖 PATH 上的 Node.js）
-      return 'node';
-    }
+    final cfg = await _loadNodeDownloadConfig();
     final exePath = await _getBundledNodeExePath();
     final exeFile = File(exePath);
+
     if (await exeFile.exists() && (await exeFile.length()) > 1000000) {
-      // 已存在且大小合理（node.exe 约 70MB）
+      print('[NodeJSManager] node.exe 已存在: $exePath '
+          '(${(await exeFile.length()) ~/ 1024} KB)');
       return exePath;
     }
+
+    print('[NodeJSManager] node.exe 不存在，自动下载 Node.js ${cfg.version}...');
+    await downloadAndExtractNodeRuntime(cfg);
+    return exePath;
+  }
+
+  /// 检查 node.exe 是否已安装
+  Future<bool> isNodeRuntimeInstalled() async {
+    final exePath = await _getBundledNodeExePath();
+    final exeFile = File(exePath);
+    if (!await exeFile.exists()) return false;
+    return (await exeFile.length()) > 1000000;
+  }
+
+  /// 下载并解压 Node.js 运行时
+  ///
+  /// 步骤：
+  /// 1. 下载 zip 到内存（流式，实时推 [nodeDownloadProgress]）
+  /// 2. 解压 zip
+  /// 3. 从中提取 `node.exe` 写到 `<AppSupport>/node-runtime/node.exe`
+  ///
+  /// UI 可通过监听 [nodeDownloadProgress] + [nodeDownloadStatus] 显示进度 dialog
+  /// [cfg] 默认为 [_loadNodeDownloadConfig] 自动加载的版本
+  /// [onProgress] 额外的本地回调（除 [nodeDownloadProgress] 外）
+  Future<void> downloadAndExtractNodeRuntime(
+    NodeDownloadConfig cfg, {
+    void Function(double progress)? onProgress,
+  }) async {
+    nodeDownloadStatus.value = 'downloading';
+    nodeDownloadProgress.value = 0.0;
+    if (onProgress != null) onProgress(0.0);
+
+    final tmpDir = await getTemporaryDirectory();
+    final tmpZipPath =
+        '${tmpDir.path}${Platform.pathSeparator}node-${cfg.version}.zip';
+
+    // 用进度回调包装的 Dio
+    final dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(minutes: 5),
+      responseType: ResponseType.bytes,
+    ));
+
+    print('[NodeJSManager] 下载 Node.js zip: ${cfg.downloadUrl}');
+    final bytes = <int>[];
+    int received = 0;
+    int? total;
+
     try {
-      print('[NodeJSManager] 从 rootBundle 解压 node.exe...');
-      final data = await rootBundle.load(_bundledNodeExe);
-      final bytes = data.buffer.asUint8List();
-      await exeFile.writeAsBytes(bytes, flush: true);
-      print('[NodeJSManager] node.exe 已就绪: $exePath (${bytes.length} bytes)');
-      return exePath;
+      final response = await dio.get<ResponseBody>(
+        cfg.downloadUrl,
+        options: Options(responseType: ResponseType.stream),
+      );
+      final body = response.data;
+      if (body == null) {
+        throw Exception('下载响应体为空');
+      }
+      final contentLength = body.contentLength;
+      if (contentLength != null && contentLength > 0) {
+        total = contentLength;
+      }
+      final stream = body.stream;
+      await for (final chunk in stream) {
+        bytes.addAll(chunk);
+        received += chunk.length;
+        if (total != null) {
+          final p = received / total;
+          nodeDownloadProgress.value = p;
+          if (onProgress != null) onProgress(p);
+        }
+      }
+    } on DioException catch (e) {
+      nodeDownloadStatus.value = 'error';
+      nodeDownloadProgress.value = null;
+      throw Exception('下载 Node.js 失败: ${e.message}');
     } catch (e) {
-      print('[NodeJSManager] 解压 node.exe 失败: $e');
+      nodeDownloadStatus.value = 'error';
+      nodeDownloadProgress.value = null;
       rethrow;
     }
+
+    if (onProgress != null) onProgress(1.0);
+    nodeDownloadProgress.value = 1.0;
+
+    print('[NodeJSManager] 下载完成: ${bytes.length} 字节，写入临时文件');
+    final tmpZip = File(tmpZipPath);
+    await tmpZip.writeAsBytes(bytes, flush: true);
+
+    // 解压
+    nodeDownloadStatus.value = 'extracting';
+    print('[NodeJSManager] 解压 Node.js zip...');
+    Archive archive;
+    try {
+      archive = ZipDecoder().decodeBytes(bytes);
+    } catch (e) {
+      nodeDownloadStatus.value = 'error';
+      throw Exception('解压 zip 失败: $e');
+    }
+    final exeFile = archive.files.firstWhere(
+      (f) => f.name == cfg.exeRelativePathInZip,
+      orElse: () => throw Exception(
+          '在 zip 中未找到 ${cfg.exeRelativePathInZip}，'
+          'zip 内容: ${archive.files.map((f) => f.name).take(5).join(", ")}...'),
+    );
+
+    final runtimeDir = Directory(await _getNodeRuntimeDir());
+    if (!await runtimeDir.exists()) {
+      await runtimeDir.create(recursive: true);
+    }
+    final destExe = File(await _getBundledNodeExePath());
+    await destExe.writeAsBytes(exeFile.content as List<int>, flush: true);
+    print(
+        '[NodeJSManager] node.exe 已就绪: ${destExe.path} (${exeFile.size} 字节)');
+
+    // 删除临时 zip
+    try {
+      await tmpZip.delete();
+    } catch (_) {}
+
+    nodeDownloadStatus.value = 'done';
+    // 2 秒后清空状态（让 UI 来得及显示完成状态）
+    Future.delayed(const Duration(seconds: 2), () {
+      if (nodeDownloadStatus.value == 'done') {
+        nodeDownloadStatus.value = null;
+        nodeDownloadProgress.value = null;
+      }
+    });
   }
 
   /// 从 rootBundle 解压 main.js 到本地磁盘
@@ -149,7 +316,7 @@ class NodeJSManager {
       final data = await rootBundle.load(_bundledMainJs);
       final bytes = data.buffer.asUint8List();
       await localFile.writeAsBytes(bytes, flush: true);
-      print('[NodeJSManager] main.js 已就绪: $localPath (${bytes.length} bytes)');
+      print('[NodeJSManager] main.js 已就绪: $localPath (${bytes.length} 字节)');
       return localPath;
     } catch (e) {
       print('[NodeJSManager] 解压 main.js 失败: $e');
@@ -771,4 +938,43 @@ class NodeJSManager {
 
     return false;
   }
+}
+
+/// Node.js 下载配置
+///
+/// 对应 [assets/nodejs-runtime/version.json] 的 schema
+class NodeDownloadConfig {
+  final String version;
+  final String mirror;
+  final String downloadUrl;
+  final String exeRelativePathInZip;
+  final int zipSizeHintMb;
+  final String minAppVersion;
+
+  NodeDownloadConfig({
+    required this.version,
+    required this.mirror,
+    required this.downloadUrl,
+    required this.exeRelativePathInZip,
+    required this.zipSizeHintMb,
+    required this.minAppVersion,
+  });
+
+  factory NodeDownloadConfig.fromJson(Map<String, dynamic> json) {
+    return NodeDownloadConfig(
+      version: (json['version'] as String?) ?? '20.11.1',
+      mirror:
+          (json['mirror'] as String?) ?? 'https://npmmirror.com/mirrors/node',
+      downloadUrl: json['download_url'] as String? ??
+          'https://npmmirror.com/mirrors/node/v20.11.1/node-v20.11.1-win-x64.zip',
+      exeRelativePathInZip: json['exe_relative_path_in_zip'] as String? ??
+          'node-v20.11.1-win-x64/node.exe',
+      zipSizeHintMb: (json['zip_size_hint_mb'] as num?)?.toInt() ?? 28,
+      minAppVersion: (json['min_app_version'] as String?) ?? '1.0.0',
+    );
+  }
+
+  @override
+  String toString() =>
+      'NodeDownloadConfig(version=$version, downloadUrl=$downloadUrl)';
 }

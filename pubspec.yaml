@@ -24,6 +24,7 @@ dependencies:
   uuid: ^4.5.1
   shared_preferences: ^2.3.4
   crypto: ^3.0.6
+  archive: ^3.6.1
 
 dev_dependencies:
   flutter_test:
@@ -41,9 +42,8 @@ flutter:
     - assets/nodejs-project/src/spider/book/
     - assets/nodejs-project/src/spider/pan/
     - assets/nodejs-project/src/util/
-    # 嵌入 Node.js 运行时（v20.11.1）—— 这样应用不依赖系统安装 Node.js
-    # 启动时由 NodeJSManager 从 rootBundle 复制到 getApplicationSupportDirectory()
-    - assets/nodejs-runtime/
+    # Node.js 运行时的版本元信息（不内嵌 node.exe，启动时按需下载）
+    - assets/nodejs-runtime/version.json
 
 dependency_overrides:
   media_kit_libs_windows_video:

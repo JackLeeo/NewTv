@@ -12,6 +12,7 @@ enum LoadingPhase {
   idle,
   loadingConfig,
   startingNodeJS,
+  downloadingNodeJS,
   downloadingSource,
   verifyingMD5,
   loadingSource,
@@ -33,6 +34,8 @@ extension LoadingPhaseDesc on LoadingPhase {
         return '正在加载配置...';
       case LoadingPhase.startingNodeJS:
         return '正在启动 Node.js 运行时...';
+      case LoadingPhase.downloadingNodeJS:
+        return '首次启动需要下载 Node.js 运行时...';
       case LoadingPhase.downloadingSource:
         return '正在下载源文件...';
       case LoadingPhase.verifyingMD5:
@@ -174,6 +177,23 @@ class AppState extends GetxController {
     if (!hasSpiderSource) return;
 
     if (!_nodeJSStarted) {
+      // 0) 如果 node.exe 缺失，先下载（弹进度 dialog）
+      if (!await NodeJSManager.instance.isNodeRuntimeInstalled()) {
+        print('[AppState] node.exe 缺失，准备下载...');
+        loadingPhase.value = LoadingPhase.downloadingNodeJS;
+        final cfg = NodeJSManager.instance.nodeDownloadConfig ??
+            await NodeJSManager.instance
+                .loadNodeDownloadConfigPublic();
+        try {
+          await NodeJSManager.instance.downloadAndExtractNodeRuntime(cfg);
+        } catch (e) {
+          loadingPhase.value = LoadingPhase.failed;
+          configLoadError.value = 'Node.js 下载失败: $e';
+          print('[AppState] Node.js 下载失败: $e');
+          return;
+        }
+      }
+
       loadingPhase.value = LoadingPhase.startingNodeJS;
       final success = await NodeJSManager.instance.startNodeJS();
       if (success) {
