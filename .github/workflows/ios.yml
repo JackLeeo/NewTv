@@ -47,8 +47,18 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version-file: pubspec.yaml
           cache: true
+          # ⚠️ 不要传 `flutter-version-file: pubspec.yaml`：
+          #   pubspec 里的 `environment.sdk: '>=3.12.0'` 是 Dart SDK 范围约束，
+          #   flutter-action 解析后会找 Flutter SDK `3.12.0`，但 stable channel 没有这个具体版本号
+          #   → 报错 "Unable to determine Flutter version for channel: stable"
+          # 正确做法：在 pubspec.yaml 加 `flutter: '>=3.22.0'`（用 stable 匹配的版本）
+          # 然后改用 `flutter-version-file: pubspec.yaml` + `channel: stable`
+          #
+          # 注意：macos-14 runner 是 Intel x86_64 Mac
+          # 不能传 architecture: ARM64（需要 macos-14-arm runner，要单独申请）
+          # 不传 architecture = 默认 x64
+          # 如果以后切到 Apple Silicon runner，把这里改成 'ARM64' 即可
 
       - name: Show Flutter / Xcode versions
         run: |
