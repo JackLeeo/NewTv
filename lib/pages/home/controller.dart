@@ -1,0 +1,199 @@
+import 'package:get/get.dart';
+import '../../models/movie.dart';
+import '../../models/movie_sort.dart';
+import '../../services/api_config.dart';
+import '../../services/source_service.dart';
+
+class HomeController extends GetxController {
+  final sorts = <SortData>[].obs;
+  final selectedSort = Rx<SortData?>(null);
+  final homeVideos = <Video>[].obs;
+  final categoryVideos = <Video>[].obs;
+  final isLoading = false.obs;
+  final currentPage = 1.obs;
+  final hasMore = true.obs;
+  final errorMessage = Rx<String?>(null);
+  final selectedFilters = <String, String>{}.obs;
+
+  List<SortFilter> get currentFilters {
+    final sortId = selectedSort.value?.id;
+    if (sortId == null) return [];
+    return sorts.firstWhereOrNull((s) => s.id == sortId)?.filters ?? [];
+  }
+
+  /// 当前显示的视频列表：对应 Swift contentArea 中的 viewModel.categoryVideos
+  List<Video> get displayVideos => categoryVideos;
+
+  @override
+  void onInit() {
+    super.onInit();
+    // 监听主页源变化，自动重新加载
+    ever(ApiConfig.instance.homeSourceBean, (source) {
+      if (source != null) {
+        refresh();
+      }
+    });
+    // 首次加载
+    loadSorts();
+  }
+
+  Future<void> loadSorts() async {
+    final source = ApiConfig.instance.homeSourceBean.value;
+    if (source == null) return;
+
+    isLoading.value = true;
+    errorMessage.value = null;
+
+    try {
+      final result = await SourceService.instance.getSort(source);
+      sorts.value = result.$1;
+      homeVideos.value = result.$2;
+
+      // 对应 Swift HomeView.task: loadSorts 后自动选择第一个分类
+      if (selectedSort.value == null && sorts.isNotEmpty) {
+        selectSort(sorts.first);
+      }
+    } catch (e) {
+      errorMessage.value = _friendlyErrorMessage(e);
+    }
+
+    isLoading.value = false;
+  }
+
+  void selectSort(SortData sort) {
+    selectedSort.value = sort;
+    errorMessage.value = null;
+    categoryVideos.clear();
+    currentPage.value = 1;
+    hasMore.value = true;
+    selectedFilters.clear();
+
+    _loadCategoryVideos(page: 1, sort: sort);
+  }
+
+  Future<void> _loadCategoryVideos({
+    required int page,
+    required SortData sort,
+  }) async {
+    final source = ApiConfig.instance.homeSourceBean.value;
+    if (source == null || isLoading.value) return;
+
+    isLoading.value = true;
+
+    try {
+      final filters = selectedFilters.isEmpty ? null : selectedFilters;
+      final videos = await SourceService.instance.getList(
+        source,
+        sort,
+        page: page,
+        filters: filters,
+      );
+
+      // 分类切换过程中，丢弃旧请求结果
+      if (selectedSort.value?.id != sort.id) {
+        isLoading.value = false;
+        return;
+      }
+
+      if (page == 1) {
+        categoryVideos.value = videos;
+      } else {
+        categoryVideos.addAll(videos);
+      }
+      currentPage.value = page;
+      hasMore.value = videos.isNotEmpty;
+    } catch (e) {
+      if (selectedSort.value?.id == sort.id) {
+        errorMessage.value = _friendlyErrorMessage(e);
+      }
+    }
+
+    isLoading.value = false;
+  }
+
+  Future<void> loadMore() async {
+    if (!hasMore.value || isLoading.value) return;
+    final sort = selectedSort.value;
+    if (sort == null) return;
+
+    final nextPage = currentPage.value + 1;
+    await _loadCategoryVideos(page: nextPage, sort: sort);
+  }
+
+  void loadMoreIfNeeded(Video currentItem) {
+    if (!hasMore.value || isLoading.value) return;
+    if (categoryVideos.isEmpty) return;
+    if (categoryVideos.last.id != currentItem.id) return;
+    final sort = selectedSort.value;
+    if (sort == null) return;
+
+    final nextPage = currentPage.value + 1;
+    _loadCategoryVideos(page: nextPage, sort: sort);
+  }
+
+  void selectFilter(String key, String value) {
+    if (value.isEmpty) {
+      selectedFilters.remove(key);
+    } else {
+      selectedFilters[key] = value;
+    }
+
+    categoryVideos.clear();
+    currentPage.value = 1;
+    hasMore.value = true;
+
+    final sort = selectedSort.value;
+    if (sort != null) {
+      _loadCategoryVideos(page: 1, sort: sort);
+    }
+  }
+
+  Future<void> refresh() async {
+    currentPage.value = 1;
+    hasMore.value = true;
+    categoryVideos.clear();
+    errorMessage.value = null;
+    // 对应 Swift: 不重置 selectedSort，保留之前选中的分类
+    await loadSorts();
+
+    // 对应 Swift: loadSorts 后，尝试找到之前选中的分类并重新加载
+    final sort = selectedSort.value;
+    if (sort != null) {
+      final matchedSort = sorts.firstWhereOrNull((s) => s.id == sort.id);
+      if (matchedSort != null) {
+        selectedSort.value = matchedSort;
+        await _loadCategoryVideos(page: 1, sort: matchedSort);
+      } else if (sorts.isNotEmpty) {
+        selectSort(sorts.first);
+      }
+    } else if (sorts.isNotEmpty) {
+      selectSort(sorts.first);
+    }
+  }
+
+  String _friendlyErrorMessage(Object error) {
+    final msg = error.toString();
+
+    // DioException / 网络相关
+    if (msg.contains('Connection refused') || msg.contains('connection refused')) {
+      return '无法连接到本地服务，请稍后重试';
+    }
+    if (msg.contains('timed out') || msg.contains('TimedOut') || msg.contains('timeout')) {
+      return '请求超时，请检查网络';
+    }
+    if (msg.contains('not connected') || msg.contains('No address associated')) {
+      return '网络未连接，请检查网络设置';
+    }
+    if (msg.contains('Connection reset') || msg.contains('connection lost')) {
+      return '网络连接中断，请稍后重试';
+    }
+    if (msg.contains('DNS') || msg.contains('dns')) {
+      return 'DNS解析失败，请检查网络设置';
+    }
+    if (msg.contains('SocketException') || msg.contains('network')) {
+      return '网络连接异常，请稍后重试';
+    }
+
+    return msg;
+  }
+}
