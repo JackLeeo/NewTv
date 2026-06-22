@@ -182,8 +182,7 @@ class AppState extends GetxController {
         print('[AppState] node.exe 缺失，准备下载...');
         loadingPhase.value = LoadingPhase.downloadingNodeJS;
         final cfg = NodeJSManager.instance.nodeDownloadConfig ??
-            await NodeJSManager.instance
-                .loadNodeDownloadConfigPublic();
+            await NodeJSManager.loadNodeDownloadConfigStatic();
         try {
           await NodeJSManager.instance.downloadAndExtractNodeRuntime(cfg);
         } catch (e) {

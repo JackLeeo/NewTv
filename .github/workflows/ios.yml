@@ -136,6 +136,25 @@ jobs:
           ls NodeMobile.xcframework/
           echo "✅ NodeMobile.xcframework ready"
 
+      - name: Install ruby + xcodeproj gem
+        # macos-14 runner 自带 ruby，需要 xcodeproj gem 来自动改 project.pbxproj
+        run: |
+          ruby --version
+          gem install xcodeproj --no-document
+
+      - name: Patch project.pbxproj (link NodeMobile + add NodeJSBridge.swift)
+        # 自动改 Runner.xcodeproj/project.pbxproj：
+        #   - 加 NodeJSBridge.swift 到 Runner group + Sources build phase
+        #   - link NodeMobile.xcframework 到 Frameworks build phase
+        #   - embed NodeMobile.xcframework 到 Embed Frameworks
+        run: |
+          set -e
+          cd ios
+          ruby scripts/add_nodemobile.rb \
+            --xcframework ../build/ios/Frameworks/NodeMobile.xcframework
+          echo "=== pbxproj 改动 diff ==="
+          git diff --stat ios/Runner.xcodeproj/project.pbxproj || true
+
       - name: Build iOS (no codesign)
         run: |
           flutter build ios \
@@ -304,10 +323,14 @@ jobs:
             2. iOS 15.0 - 16.6.x：TrollStore v2 / v3
             3. iOS 17+：Misaka / 其他巨魔衍生工具
 
-            ### ⚠️ 重要：本 IPA 包含 iOS 端 Node.js 集成
+            ### ✅ iOS 端 Node.js 集成已完成
             - 嵌入 [NodeMobile.xcframework](https://github.com/nodejs-mobile/nodejs-mobile) v18.20.4
-            - 嵌入 [main.js](file:///d:/gz/new/assets/nodejs-project/dist/main.js)（webpack 编译后的 Node 服务端脚本）
-            - iOS native 通过 platform channel 调 NodeMobile 启动 Node.js 进程
+            - 嵌入 [main.js](file:///d:/gz/new/assets/nodejs-project/dist/main.js)（esbuild 编译后的 Node 服务端脚本）
+            - **Swift 端 `ios/Runner/NodeJSBridge.swift` 已实现**：
+              - `com.tvbox/flutter/nodejs` FlutterMethodChannel
+              - 调 `node_start(argc, argv)` 启动 Node.js 主循环
+              - Node.js 退出时通过 `onNodeExit` 推回 Dart
+            - pbxproj 已通过 ruby `xcodeproj` gem 自动 link + embed
             - **首次启动需要联网**下载远程源 URL（用户在设置页输入）
 
             ### 兼容性
@@ -315,8 +338,5 @@ jobs:
             - arm64 设备（iPhone 5s+）
 
             ### 已知问题
-            - ⚠️ 需要先完成 iOS native platform channel 代码（`ios/Runner/NodeJSBridge.swift`）
-              才能从 Flutter 端启动 Node.js。本 workflow 已经把 framework + main.js
-              嵌进 IPA，但**实际启动 Node.js 还需要 Swift 端 platform channel**
             - 部分 Windows-only 插件（media_kit 等）在 iOS 上无效
             - iOS 端没有原生 media_kit 视频播放（需要切换成 video_player 或其他 iOS 插件）
