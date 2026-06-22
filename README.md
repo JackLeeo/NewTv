@@ -1,253 +1,193 @@
-<div align="center">
-    <img width="200" height="200" src="assets/images/logo/logo.png">
-</div>
+# NewTv · 跨平台 TVBox 视频播放器
 
+> **最终成品：iOS 巨魔 IPA**（[TrollStore](https://github.com/opa334/TrollStore) 安装，无需 Apple 签名）
+> **开发机：Windows**（用 `.node.exe` 提前发现 bug，降低 iOS 调试成本）
 
+基于 **Flutter** + **Node.js** 远程源 + **media_kit** 视频播放的跨平台 TVBox 客户端。
 
-<div align="center">
-    <h1>PiliPlus</h1>
-<div align="center">
-    
-![GitHub repo size](https://img.shields.io/github/repo-size/bggRGjQaUbCoE/PiliPlus) 
-![GitHub Repo stars](https://img.shields.io/github/stars/bggRGjQaUbCoE/PiliPlus) 
-![GitHub all releases](https://img.shields.io/github/downloads/bggRGjQaUbCoE/PiliPlus/total) 
-</div>
-    <p>使用Flutter开发的BiliBili第三方客户端</p>
-    
-<img src="assets/screenshots/510shots_so.png" width="32%" alt="home" />
-<img src="assets/screenshots/174shots_so.png" width="32%" alt="home" />
-<img src="assets/screenshots/850shots_so.png" width="32%" alt="home" />
-<br/>
-<img src="assets/screenshots/main_screen.png" width="96%" alt="home" />
-<br/>
-</div>
+---
 
+## ✨ 功能
 
-<br/>
+- 📺 **远程源加载**：用户在设置页输入远程源 URL（`.js` + `.js.md5`），自动 MD5 校验 + 缓存，断网时使用本地缓存
+- 🎬 **视频播放**：基于 [media_kit](https://github.com/media-kit/media-kit) + libmpv，硬件解码、字幕、音轨切换
+- 🔍 **资源搜索**：整合视频源 + 网盘（阿里、夸克、UC）搜索
+- 🕷️ **多爬虫架构**：Node.js 服务端跑爬虫，Dart 端通过 HTTP 拿到结构化数据
+- 💾 **多源管理**：第一次输入 URL 后写入本地缓存，下次启动自动加载
+- ⚙️ **设置中心**：源 URL 变更、缓存清理、连接管理、错误日志查看
 
-## 适配平台
+---
 
-- [x] Android
-- [x] iOS
-- [x] Pad
-- [x] Windows
-- [x] Linux
+## 📦 平台支持
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/piliplus.svg)](https://repology.org/project/piliplus/versions)
+| 平台 | 状态 | Node.js 集成方式 | 安装包 |
+|---|---|---|---|
+| **iOS（巨魔）** | ✅ 主要成品 | 嵌入 [NodeMobile.xcframework](https://github.com/nodejs-mobile/nodejs-mobile) v18.20.4 | TrollStore IPA（伪签） |
+| **Windows** | ✅ 开发机 | `Process.start(node.exe)` + 按需下载 | Inno Setup `.exe`（自包含安装器） |
+| **Android** | ⏳ 架构占位 | 待补 libnode.a + JNI 桥 | — |
 
-## refactor
+> **设计取舍**：因为 iOS 沙盒拒绝任意 `.node.exe`，必须用 Apple 接受的 [NodeMobile](https://github.com/nodejs-mobile/nodejs-mobile) framework。Windows 用 `.node.exe` 是为了在开发机上提前发现 bug（跨端共用同一套 Node.js 业务代码），降低 iOS 调试成本。
 
-- [ ] gRPC [wip]
-- [x] 用户界面
-- [x] 其他
+---
 
-## feat
+## 🏗️ 跨平台架构
 
-- [x] 编辑动态
-- [x] DLNA 投屏
-- [x] 离线缓存/播放
-- [x] 移动端支持点击弹幕悬停，点赞、复制、举报 by [@My-Responsitories](https://github.com/My-Responsitories)
-- [x] 播放音频
-- [x] 跳过番剧片头/片尾
-- [x] 安卓端 `loudnorm` 适配 by [@My-Responsitories](https://github.com/My-Responsitories)
-- [x] Win/Mac 支持极验、短信登录 by [@My-Responsitories](https://github.com/My-Responsitories)
-- [x] 视频截取动图 by [@My-Responsitories](https://github.com/My-Responsitories)
-- [x] AI 原声翻译
-- [x] SuperChat
-- [x] 播放课堂视频
-- [x] 发起投票
-- [x] 发布动态/评论支持`富文本编辑`/`表情显示`/`@用户`
-- [x] 修改消息设置
-- [x] 修改聊天设置
-- [x] 展示折叠消息
-- [x] 查看用户图文
-- [x] 动态话题
-- [x] 直播分区
-- [x] 分享`视频`/`番剧`/`动态`/`专栏`/`直播`至消息
-- [x] 创建/修改/删除关注分组
-- [x] 移除粉丝
-- [x] 直播弹幕发送表情
-- [x] 收藏夹排序
-- [x] 稍后再看 ~~`未看`~~ / `未看完` / ~~`已看完`~~ 分类
-- [x] WebDAV 备份/恢复设置
-- [x] 保存评论/动态
-- [x] 高级弹幕 by [@My-Responsitories](https://github.com/My-Responsitories)
-- [x] 取消/置顶评论
-- [x] 记笔记
-- [x] 多账号支持 by [@My-Responsitories](https://github.com/My-Responsitories)
-- [x] 屏蔽带货动态/评论
-- [x] 互动视频
-- [x] 发评/动态反诈
-- [x] 高能进度条
-- [x] 滑动跳转预览视频缩略图
-- [x] Live Photo
-- [x] 复制/移动/排序收藏夹/稍后再看视频
-- [x] 超分辨率
-- [x] 合并弹幕
-- [x] 会员彩色弹幕
-- [x] 播放全部/继续播放/倒序播放
-- [x] Cookie登录
-- [x] 显示视频分段信息
-- [x] 调节字幕大小
-- [x] 调节全屏弹幕大小
-- [x] 收藏夹/稍后再看多选删除
-- [x] 搜索用户动态
-- [x] 直播弹幕
-- [x] 修改头像/用户名/签名/性别/生日
-- [x] 创建/编辑/删除收藏夹
-- [x] 评论楼中楼查看对话
-- [x] 评论楼中楼定位点击查看的评论
-- [x] 评论楼中楼按热度/时间排序
-- [x] 评论点踩
-- [x] 私信发图
-- [x] 投币动画
-- [x] 取消/追番，更新追番状态
-- [x] 取消/订阅合集
-- [x] SponsorBlock
-- [x] 显示视频完整合集
-- [x] 三连动画
-- [x] 番剧三连
-- [x] 带图评论
-- [x] 视频TAG
-- [x] 筛选搜索
-- [x] 转发动态
-- [x] 合集图片
-- [x] 删除/置顶/撤回私信
-- [x] 举报用户/评论/视频/动态
-- [x] 删除/发布/置顶文本/图片动态
-- [x] 其他
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Flutter Dart 端（跨端统一）                                  │
+│  ┌─────────────────┐  ┌──────────────────┐  ┌────────────┐  │
+│  │ NodeJSManager   │  │ dart:io          │  │ UI / GetX  │  │
+│  │  (Platform.isXxx│  │ HttpServer 收    │  │            │  │
+│  │   选 platform)  │  │ Node.js 通知     │  │            │  │
+│  └────────┬────────┘  └──────────────────┘  └────────────┘  │
+│           │                                                  │
+│  ┌────────┴──────────────────────────────────────────────┐  │
+│  │ NodeJSPlatform (abstract)                             │  │
+│  │  startNodeJS / stopNodeJS / loadSource / 路径         │  │
+│  └────┬──────────────┬───────────────────┬───────────────┘  │
+│       │              │                   │                   │
+│  ┌────▼─────┐  ┌─────▼──────┐  ┌─────────▼─────┐            │
+│  │ Windows  │  │ iOS        │  │ Android       │            │
+│  │ Process  │  │ MethodChan │  │ 占位          │            │
+│  │ .start() │  │ → Swift →  │  │ throw UIE     │            │
+│  │ node.exe │  │ node_start │  │               │            │
+│  └────┬─────┘  └─────┬──────┘  └───────────────┘            │
+└───────┼──────────────┼──────────────────────────────────────┘
+        │              │
+   ┌────▼─────┐   ┌────▼──────────────┐
+   │ node.exe │   │ NodeMobile.xcframework
+   │ (下载)   │   │ (嵌入 bundle)     │
+   └──────────┘   └───────────────────┘
+```
 
-## opt
+详细见 [lib/services/nodejs_platform.dart](lib/services/nodejs_platform.dart) 接口定义，以及三个实现：
 
-- [x] 专栏界面
-- [x] 私信界面
-- [x] 收藏面板
-- [x] PIP
-- [x] 视频封面
-- [x] 回复界面
-- [x] 系统通知
-- [x] 评论显示
-- [x] 亮度调节
-- [x] 视频播放
-- [x] 视频staff
-- [x] 防止bottomsheet遮挡全屏视频
-- [x] 其他
+- [nodejs_platform_windows.dart](lib/services/nodejs_platform_windows.dart) — `Process.start` + 运行时下载
+- [nodejs_platform_ios.dart](lib/services/nodejs_platform_ios.dart) — `MethodChannel` 调 Swift
+- [nodejs_platform_android.dart](lib/services/nodejs_platform_android.dart) — 占位（throw `UnimplementedError`）
 
-## fix
+iOS native 端：
 
-- [x] 番剧分集点赞/投币/收藏
-- [x] bugs
+- [ios/Runner/NodeJSBridge.swift](ios/Runner/NodeJSBridge.swift) — 调 `node_start(argc, argv)` 启动 Node.js
+- [ios/Runner/Runner-Bridging-Header.h](ios/Runner/Runner-Bridging-Header.h) — `import <NodeMobile/NodeMobile.h>`
+- [ios/Runner/AppDelegate.swift](ios/Runner/AppDelegate.swift) — 在 `didInitializeImplicitFlutterEngine` 注册 channel
+- [ios/scripts/add_nodemobile.rb](ios/scripts/add_nodemobile.rb) — ruby `xcodeproj` gem 自动 link + embed NodeMobile
 
-<br/>
+---
 
-## 功能
+## 🚀 快速开始
 
-- [x] 推荐视频列表(app端)
-- [x] 最热视频列表
-- [x] 热门直播
-- [x] 番剧列表
-- [x] 屏蔽黑名单内用户视频
-- [x] 无痕模式（播放视为未登录）
-- [x] 游客模式（推荐视为未登录）
+### 前置依赖
 
-- [x] 用户相关
-  - [x] 粉丝、关注用户、拉黑用户查看
-  - [x] 用户主页查看
-  - [x] 关注/取关用户
-  - [x] 离线缓存
-  - [x] 稍后再看
-  - [x] 观看记录
-  - [x] 我的收藏
-  - [x] 站内私信
-  
-- [x] 动态相关
-  - [x] 全部、投稿、番剧分类查看
-  - [x] 动态评论查看
-  - [x] 动态评论回复功能
+- Flutter 3.24.0+（[stable channel](https://docs.flutter.dev/release/archive)）
+- Dart 3.12.0+
+- **Windows 端额外**：[Media Player](https://support.microsoft.com/en-us/windows/media-player)（libmpv 运行时需要）
+- **iOS 端额外**：[TrollStore](https://github.com/opa334/TrollStore) 装到主控设备
 
-- [x] 视频播放相关
-  - [x] 双击快进/快退
-  - [x] 双击播放/暂停
-  - [x] 垂直方向调节亮度/音量
-  - [x] 垂直方向上滑全屏、下滑退出全屏
-  - [x] 水平方向手势快进/快退
-  - [x] 全屏方向设置
-  - [x] 倍速选择/长按2倍速
-  - [x] 硬件加速（视机型而定）
-  - [x] 画质选择（高清画质未解锁）
-  - [x] 音质选择（视视频而定）
-  - [x] 解码格式选择（视视频而定）
-  - [x] 弹幕
-  - [x] 字幕
-  - [x] 记忆播放
-  - [x] 视频比例：高度/宽度适应、填充、包含等
-     
-- [x] 搜索相关
-  - [x] 热搜
-  - [x] 搜索历史
-  - [x] 默认搜索词
-  - [x] 投稿、番剧、直播间、用户搜索
-  - [x] 视频搜索排序、按时长筛选
-    
-- [x] 视频详情页相关
-  - [x] 视频选集(分p)切换
-  - [x] 点赞、投币、收藏/取消收藏
-  - [x] 相关视频查看
-  - [x] 评论用户身份标识
-  - [x] 评论(排序)查看、二楼评论查看
-  - [x] 主楼、二楼评论回复功能
-  - [x] 评论点赞
-  - [x] 评论笔记图片查看、保存
+### 本地运行
 
-- [x] 设置相关
-  - [x] 画质、音质、解码方式预设      
-  - [x] 图片质量设定
-  - [x] 主题模式：亮色/暗色/跟随系统
-  - [x] 震动反馈(可选)
-  - [x] 高帧率
-  - [x] 自动全屏
-  - [x] 横屏适配
-- [ ] 等等
+```bash
+# 1. 装依赖
+flutter pub get
 
-<br/>
+# 2. 跑 Windows 端
+flutter run -d windows
 
-## 下载
+# 3. 跑 iOS 端（需要 macOS + Xcode）
+flutter run -d ios
+```
 
-可以通过右侧release进行下载或拉取代码到本地进行编译
+### 第一次使用
 
-<br/>
+1. 启动 App，看到「请输入远程源 URL」提示
+2. 输入你的 TVBox 源地址（`.js` 结尾，例如 `https://example.com/tvbox/index.js`）
+3. App 自动下载源文件，缓存到本地
+4. 下次启动自动加载（先校验 MD5，不一致才重新下载）
 
-## 声明
+### 重置源
 
-此项目（PiliPlus）是个人为了兴趣而开发，仅用于学习和测试，请于下载后24小时内删除。
-所用API皆从官方网站收集，不提供任何破解内容。
-在此致敬原作者：[guozhigq/pilipala](https://github.com/guozhigq/pilipala)
-在此致敬上游作者：[orz12/PiliPalaX](https://github.com/orz12/PiliPalaX)
-本仓库做了更激进的修改，感谢原作者的开源精神。
+进入 **设置 → 重置配置**，清空本地缓存，回到初始输入页。
 
-感谢使用
+---
 
+## 📦 打包
 
-<br/>
+### Windows 自包含安装器
 
-## 致谢
+```bash
+# 1. Build Flutter app
+flutter build windows --release
 
-- [bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect)
-- [flutter_meedu_videoplayer](https://github.com/zezo357/flutter_meedu_videoplayer)
-- [media-kit](https://github.com/media-kit/media-kit)
-- [dio](https://pub.dev/packages/dio)
-- 等等
+# 2. 编译安装器（PowerShell）
+# 工具在 tools/installer/Installer.cs
+# 详见 tools/installer/README.md
+```
 
-<br/>
-<br/>
-<br/>
+安装器会：
+- 引导用户选安装路径（不默认 `C:\Program Files\`）
+- 内嵌 `app.zip`（Flutter 产物 + 资源）
+- 首次启动检查 Node.js 运行时，缺失则按需下载
 
-## Star History
+### iOS 巨魔 IPA
 
-<a href="https://www.star-history.com/#bggRGjQaUbCoE/PiliPlus&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=bggRGjQaUbCoE/PiliPlus&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=bggRGjQaUbCoE/PiliPlus&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=bggRGjQaUbCoE/PiliPlus&type=Date" />
- </picture>
-</a>
+```bash
+# 在 GitHub 上手动触发 .github/workflows/ios.yml
+# 工作流会自动：
+# 1. checkout
+# 2. setup Flutter (stable)
+# 3. brew install ldid
+# 4. pub get
+# 5. esbuild main.js（Node.js 业务代码）
+# 6. 下载 NodeMobile.xcframework
+# 7. ruby 脚本自动改 pbxproj link NodeMobile
+# 8. flutter build ios --no-codesign
+# 9. 嵌入 NodeMobile + main.js 到 Runner.app
+# 10. ldid 伪签主 app + framework
+# 11. 打 IPA
+# 12. 上传 artifact
+```
+
+触发 workflow 后下载 IPA，丢进 TrollStore 装到设备。
+
+---
+
+## 🛠️ 技术栈
+
+| 层级 | 选型 |
+|---|---|
+| UI 框架 | Flutter 3.24+ |
+| 状态管理 | [GetX](https://pub.dev/packages/get) 4.6 |
+| HTTP | [Dio](https://pub.dev/packages/dio) 5.4 |
+| 本地存储 | [Hive CE](https://pub.dev/packages/hive_ce) 2.19 |
+| 视频播放 | [media_kit](https://github.com/media-kit/media-kit) 1.1 + libmpv |
+| 桌面窗口 | [window_manager](https://pub.dev/packages/window_manager) |
+| Node.js 嵌入 | [NodeMobile](https://github.com/nodejs-mobile/nodejs-mobile) v18.20.4（iOS） |
+| Node.js 运行时 | [Node.js](https://nodejs.org) v20.11.1（Windows 按需下载） |
+| 巨魔伪签 | [ldid](https://github.com/saurik/ldid)（Saurik） |
+| pbxproj 自动化 | ruby [xcodeproj](https://github.com/CocoaPods/Xcodeproj) gem |
+
+---
+
+## 🤝 贡献
+
+欢迎提 issue / PR。请确保：
+
+1. 修改后 `flutter analyze` 0 error
+2. 跨端兼容（Windows 端验证基础功能，iOS 端验证 platform channel）
+3. 业务代码改动同步更新 `assets/nodejs-project/src/`
+
+---
+
+## 📜 许可证
+
+[MIT](LICENSE)
+
+---
+
+## 🙏 致谢
+
+- [media_kit](https://github.com/media-kit/media-kit) — Flutter 视频播放
+- [NodeMobile](https://github.com/nodejs-mobile/nodejs-mobile) — iOS 端 Node.js 嵌入
+- [TrollStore](https://github.com/opa334/TrollStore) — 巨魔 IPA 安装
+- [ldid](https://github.com/saurik/ldid) — ad-hoc 伪签
+- [tvbox 社区](https://github.com/qist/tvbox) — TVBox 爬虫生态

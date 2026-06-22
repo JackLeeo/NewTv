@@ -17,6 +17,7 @@
 
 require 'xcodeproj'
 require 'optparse'
+require 'pathname'
 
 options = {
   xcframework: nil,
@@ -39,18 +40,27 @@ end
 # 把传入的 xcframework 路径转成绝对路径
 # 用 `Dir.pwd`（当前工作目录）做 base，因为：
 #   - workflow 步骤 `cd ios` 后，参数会被解析为相对 ios/
-#   - 但 pbxproj 在 `ios/Runner.xcodeproj/`，相对于 pbxproj 解析会让 `../` 跑偏
 xcframework_abs = File.expand_path(options[:xcframework], Dir.pwd)
 unless Dir.exist?(xcframework_abs)
   abort("❌ 找不到 xcframework: #{xcframework_abs}")
 end
 
-project_path = File.expand_path(options[:pbxproj], Dir.pwd)
-unless File.exist?(project_path)
-  abort("❌ 找不到 pbxproj: #{project_path}")
+# project.pbxproj 文件绝对路径
+pbxproj_file = File.expand_path(options[:pbxproj], Dir.pwd)
+unless File.exist?(pbxproj_file)
+  abort("❌ 找不到 pbxproj: #{pbxproj_file}")
 end
 
-project = Xcodeproj::Project.open(project_path)
+# Xcodeproj::Project.open 期望传入**项目目录**（Runner.xcodeproj/），
+# 不是 project.pbxproj 文件路径。
+# 内部 `initialize_from_file` 会执行 `path + 'project.pbxproj'`，所以
+# 如果传了文件路径会变成 `Runner.xcodeproj/project.pbxproj/project.pbxproj`
+project_dir = File.dirname(pbxproj_file)
+
+# ⚠️ 关键：`Xcodeproj::Project.open` 不会改 Dir.pwd，
+# 但内部创建 PBXFileReference 时会假设 path 相对 project_dir。
+# 所以我们必须确保后续 add_file 时 path 是相对 project_dir 的。
+project = Xcodeproj::Project.open(project_dir)
 runner_target = project.targets.find { |t| t.name == 'Runner' }
 abort('❌ 找不到 Runner target') unless runner_target
 
@@ -90,13 +100,18 @@ end
 
 framework_ref = frameworks_group.files.find { |f| f.path == framework_relative_path || f.name == framework_basename }
 unless framework_ref
-  # 传绝对路径给 new_file，让 xcodeproj 自己处理 source_tree
-  # 如果传相对路径，xcodeproj 默认按 group 解析，写出来的 pbxproj 路径会错
-  framework_ref = frameworks_group.new_file(xcframework_abs)
+  # 计算 xcframework 相对 project_dir 的相对路径
+  # project_dir = ios/Runner.xcodeproj
+  # xcframework_abs = build/ios/Frameworks/NodeMobile.xcframework
+  # → 相对路径 = ../../build/ios/Frameworks/NodeMobile.xcframework
+  framework_rel = Pathname.new(xcframework_abs)
+    .relative_path_from(Pathname.new(project_dir))
+    .to_s
+  framework_ref = frameworks_group.new_file(framework_rel)
   framework_ref.source_tree = '<group>'
   framework_ref.name = framework_basename
   framework_ref.last_known_file_type = 'wrapper.xcframework'
-  puts "✅ 已加 #{framework_basename} 到 Frameworks group"
+  puts "✅ 已加 #{framework_basename} 到 Frameworks group (path=#{framework_rel})"
 else
   puts "✅ #{framework_basename} 已在 Frameworks group 中"
 end
@@ -137,7 +152,7 @@ end
 # ============================================================
 project.save
 puts ''
-puts "💾 已保存 #{project_path}"
+puts "💾 已保存 #{pbxproj_file}"
 puts ''
 puts '🔍 最终状态：'
 puts "  - Runner target sources: #{runner_target.source_build_phase.files_references.map(&:path).compact.uniq.join(', ')}"

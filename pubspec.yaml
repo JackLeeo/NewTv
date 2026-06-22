@@ -1,5 +1,5 @@
 name: tvbox
-description: TVBox video player
+description: 跨平台 TVBox 视频播放器（iOS 巨魔 / Android / Windows）。基于 Flutter + Node.js 远程源 + media_kit 视频播放。
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -35,7 +35,6 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/images/
     - assets/nodejs-project/dist/
     - assets/nodejs-project/src/
     - assets/nodejs-project/src/spider/
