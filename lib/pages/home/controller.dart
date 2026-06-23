@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 import '../../models/movie.dart';
 import '../../models/movie_sort.dart';
@@ -5,7 +6,7 @@ import '../../services/api_config.dart';
 import '../../services/app_state.dart';
 import '../../services/source_service.dart';
 
-class HomeController extends GetxController {
+class HomeController extends GetxController with WidgetsBindingObserver {
   final sorts = <SortData>[].obs;
   final selectedSort = Rx<SortData?>(null);
   final homeVideos = <Video>[].obs;
@@ -35,6 +36,11 @@ class HomeController extends GetxController {
   @override
   void onInit() {
     super.onInit();
+    // 监听 lifecycle：应用从后台/锁屏切回前台时强制重置 isLoading 并刷新
+    // （旧 dio 的 in-flight 请求可能永远不返回，导致 isLoading 一直卡在 true，
+    //  新 dio 的请求又因为 isLoading=true 被跳过，出现"点击无响应"）
+    WidgetsBinding.instance.addObserver(this);
+
     // 监听主页源变化，自动重新加载
     ever(ApiConfig.instance.homeSourceBean, (source) {
       if (source != null) {
@@ -67,7 +73,26 @@ class HomeController extends GetxController {
   @override
   void onClose() {
     _loadingPhaseWorker?.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     super.onClose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 应用从后台/锁屏切回前台时：
+    // 1. 强制重置 isLoading（之前后台挂起的请求可能永不返回，
+    //    导致 isLoading 一直卡在 true，新点击的请求被跳过）
+    // 2. 主动刷新数据（homeSourceBean 引用没变，ever 监听不会触发；
+    //    且 iOS 后台时 dio socket 已死，旧 dio 不能再用）
+    if (state == AppLifecycleState.resumed) {
+      isLoading.value = false;
+      // 延后一帧执行，避免在 build 阶段触发 setState
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!isClosed) {
+          refresh();
+        }
+      });
+    }
   }
 
   Future<void> loadSorts() async {

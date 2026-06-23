@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/movie.dart';
@@ -42,7 +43,7 @@ class PlaybackQualityOption {
   int get hashCode => id.hashCode;
 }
 
-class DetailController extends GetxController {
+class DetailController extends GetxController with WidgetsBindingObserver {
   final vodInfo = Rx<VodInfo?>(null);
   final isLoading = false.obs;
   final errorMessage = Rx<String?>(null);
@@ -102,6 +103,38 @@ class DetailController extends GetxController {
   void onInit() {
     super.onInit();
     loadSkipDurations();
+    // 监听 lifecycle：应用从后台/锁屏切回前台时强制重置 isLoading
+    // 并重新加载详情（避免旧 dio in-flight 请求卡住 isLoading）
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void onClose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.onClose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      isLoading.value = false;
+      final info = vodInfo.value;
+      // 如果之前已经加载过详情但因为 dio 死连接而 vodInfo 是 null 或 playUrl 是 null，
+      // 在切回前台时主动重新触发一次加载/解析
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (isClosed) return;
+        // 优先解析播放 URL（如果 detail 已有但 playUrl 没解析出来）
+        if (info != null && playUrl.value == null) {
+          final episode = info.currentEpisode;
+          if (episode != null) {
+            updateQualityOptions(episode.url, resetSelection: false);
+            if (isSpiderSource) {
+              _resolveSpiderPlayUrl(flag: selectedFlag.value, id: episode.url);
+            }
+          }
+        }
+      });
+    }
   }
 
   List<Episode> get currentEpisodes =>

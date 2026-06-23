@@ -59,52 +59,77 @@ class SpiderService {
 
   /// 发送 POST 请求到 Spider 服务 - 对应 Swift postJSON
   /// 使用 ResponseType.plain 手动解析 JSON，接受 200-299 状态码
+  /// 关键：iOS 后台/锁屏切回前台时，dio 的 socket 可能处于半死状态（OS
+  /// 已标记断开但 dio 还没收到 RST），第一次请求会失败；加 1 次重试可恢复
+  static const int _maxPostRetries = 1;
+  static const Duration _postRetryDelay = Duration(milliseconds: 300);
+
   Future<Map<String, dynamic>?> _postJSON(
     String url,
     Map<String, dynamic> body,
   ) async {
-    try {
-      final response = await _dio.post<String>(
-        url,
-        data: jsonEncode(body),
-        options: Options(
-          contentType: Headers.jsonContentType,
-          responseType: ResponseType.plain,
-        ),
-      );
+    for (var attempt = 0; attempt <= _maxPostRetries; attempt++) {
+      try {
+        final response = await _dio.post<String>(
+          url,
+          data: jsonEncode(body),
+          options: Options(
+            contentType: Headers.jsonContentType,
+            responseType: ResponseType.plain,
+          ),
+        );
 
-      final statusCode = response.statusCode ?? 0;
-      final responseBody = response.data ?? '';
+        final statusCode = response.statusCode ?? 0;
+        final responseBody = response.data ?? '';
 
-      // 对应 Swift: guard (200...299).contains(httpResponse.statusCode)
-      if (statusCode >= 200 && statusCode <= 299) {
-        try {
-          final decoded = jsonDecode(responseBody);
-          if (decoded is Map<String, dynamic>) {
-            return decoded;
-          } else if (decoded is List) {
-            // 某些 Spider 响应可能返回数组，包装为对象
-            return {'list': decoded};
+        // 对应 Swift: guard (200...299).contains(httpResponse.statusCode)
+        if (statusCode >= 200 && statusCode <= 299) {
+          try {
+            final decoded = jsonDecode(responseBody);
+            if (decoded is Map<String, dynamic>) {
+              return decoded;
+            } else if (decoded is List) {
+              // 某些 Spider 响应可能返回数组，包装为对象
+              return {'list': decoded};
+            }
+            print('[SpiderService] 响应不是JSON对象: $url, body类型=${decoded.runtimeType}');
+            return null;
+          } catch (e) {
+            print('[SpiderService] JSON解析失败: $url, 错误=$e, body=${responseBody.length > 500 ? responseBody.substring(0, 500) : responseBody}');
+            return null;
           }
-          print('[SpiderService] 响应不是JSON对象: $url, body类型=${decoded.runtimeType}');
-          return null;
-        } catch (e) {
-          print('[SpiderService] JSON解析失败: $url, 错误=$e, body=${responseBody.length > 500 ? responseBody.substring(0, 500) : responseBody}');
+        } else {
+          print('[SpiderService] HTTP错误 $statusCode: $url, body=${responseBody.length > 500 ? responseBody.substring(0, 500) : responseBody}');
           return null;
         }
-      } else {
-        print('[SpiderService] HTTP错误 $statusCode: $url, body=${responseBody.length > 500 ? responseBody.substring(0, 500) : responseBody}');
+      } on DioException catch (e) {
+        // iOS 后台/锁屏切回前台时，dio 的 socket 可能半死（OS 标记断开但
+        // 没收到 RST），重试一次通常能恢复
+        final isRetriable = e.type == DioExceptionType.connectionError ||
+            e.type == DioExceptionType.connectionTimeout ||
+            e.type == DioExceptionType.sendTimeout ||
+            e.type == DioExceptionType.receiveTimeout ||
+            e.type == DioExceptionType.unknown;
+        if (attempt < _maxPostRetries && isRetriable) {
+          print('[SpiderService] POST $url 第 ${attempt + 1} 次失败，${_postRetryDelay.inMilliseconds}ms 后重试: ${e.type}/${e.message}');
+          await Future.delayed(_postRetryDelay);
+          // 重试前重建 dio（确保新 socket）
+          try {
+            _dio.close(force: true);
+          } catch (_) {}
+          _dio = _buildDio();
+          continue;
+        }
+        final code = e.response?.statusCode ?? 0;
+        final respBody = e.response?.data?.toString() ?? '';
+        print('[SpiderService] POST $url 失败: code=$code, type=${e.type}, message=${e.message}, body=${respBody.length > 500 ? respBody.substring(0, 500) : respBody}');
+        return null;
+      } catch (e) {
+        print('[SpiderService] POST $url 未知错误: $e');
         return null;
       }
-    } on DioException catch (e) {
-      final code = e.response?.statusCode ?? 0;
-      final respBody = e.response?.data?.toString() ?? '';
-      print('[SpiderService] POST $url 失败: code=$code, type=${e.type}, message=${e.message}, body=${respBody.length > 500 ? respBody.substring(0, 500) : respBody}');
-      return null;
-    } catch (e) {
-      print('[SpiderService] POST $url 未知错误: $e');
-      return null;
     }
+    return null;
   }
 
   // ============================================================
