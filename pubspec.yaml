@@ -20,7 +20,7 @@ dependencies:
   media_kit_libs_video: ^1.0.5
   connectivity_plus: 6.1.5  # 7.x 用了 iOS 26 SDK 的 API（NWPath.isUltraConstrained），macos-14 runner 是 Xcode 15-16 编译不过
   window_manager: ^0.4.0
-  url_launcher: ^6.3.1
+  # url_launcher 已废弃：配置中心改用应用内 webview_flutter 替代
   flutter_smart_dialog: ^4.9.0
   uuid: ^4.5.1
   shared_preferences: ^2.3.4
@@ -31,6 +31,8 @@ dependencies:
   # iOS 端需要 NSLocalNetworkUsageDescription + NSBonjourServices = [_ssdp._udp]
   # 已在 ios/Runner/Info.plist 配置
   dlna_dart: ^0.1.0
+  # 应用内 WebView（用于配置中心 URL，替代 url_launcher 跳外部浏览器）
+  webview_flutter: ^4.10.0
 
 dev_dependencies:
   flutter_test:

@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../../common/theme.dart';
 import '../../services/api_config.dart';
 import '../../services/app_state.dart';
@@ -9,6 +8,7 @@ import '../../models/source_bean.dart';
 import '../../models/movie.dart';
 import '../../widgets/vod_card.dart';
 import '../../widgets/common_widgets.dart';
+import '../webview/view.dart';
 import 'controller.dart';
 
 /// 首页 - 对应 Swift HomeView
@@ -467,8 +467,15 @@ class _HomePageState extends State<HomePage> {
     }
 
     if (openUrl != null) {
-      // 对应 Swift: safariUrl = url → 使用 url_launcher 打开浏览器
-      launchUrl(Uri.parse(openUrl), mode: LaunchMode.externalApplication);
+      // 在**应用内**打开 WebView（替代 url_launcher 跳外部浏览器），
+      // 让用户保持 TVBox 上下文，符合"配置中心"的语义。
+      Get.to(
+        () => InAppWebViewPage(
+          url: openUrl!,
+          title: '配置中心',
+        ),
+        transition: Transition.cupertino,
+      );
     }
   }
 }

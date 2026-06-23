@@ -703,6 +703,14 @@ class _SettingsPageState extends State<SettingsPage> {
                 fontSize: AppTheme.fontCaption,
               ),
             ),
+            const SizedBox(height: AppTheme.spacingXS),
+            const Text(
+              '软件作者：包子',
+              style: TextStyle(
+                color: AppTheme.textTertiary,
+                fontSize: AppTheme.fontCaption,
+              ),
+            ),
           ],
         ),
         actions: [
