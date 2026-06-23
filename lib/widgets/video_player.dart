@@ -1523,10 +1523,15 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
+            // 顶部可点击空白：关闭 sheet。
+            // 用 SizedBox 而不是 Expanded：Expanded 必须嵌在 Column/Row 中，
+            // 外层 Column 是 Flex，所以这里 Expanded 在 GestureDetector 内
+            // 行为不可靠（GestureDetector 不是 Flex 父级，Expanded 的 flex
+            // 没有效果；用 SizedBox 给一个非零高度让它真的能 hitTest）
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () => setState(() => _showEpisodeSheet = false),
-              child: const Expanded(child: SizedBox.shrink()),
+              child: const SizedBox(height: 1, width: double.infinity),
             ),
             Container(
               constraints: const BoxConstraints(maxHeight: 320),
@@ -1536,11 +1541,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Column(
-                // 关键：必须用 max + Expanded，否则 Flexible(loose) 拿不到有界
-                // 高度，整个 body 被压成 0 → 用户看到的就是蒙层 + 标题细条
-                // = 视觉上的"灰屏"。同时 Expanded 需要 ScrollView 拿满剩余高度
-                // 才能正确可滚。
-                mainAxisSize: MainAxisSize.max,
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -1571,7 +1572,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                       ],
                     ),
                   ),
-                  Expanded(
+                  // 用 SizedBox 给 GridView 固定高度（Swift 版 ScrollView+maxHeight
+                  // 的精确对等实现），不依赖 Expanded/Column(max) 的复杂布局
+                  SizedBox(
+                    height: 256,
                     child: GridView.builder(
                       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                       gridDelegate:
@@ -1583,7 +1587,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                       ),
                       itemCount: widget.episodeNames.length,
                       itemBuilder: (context, index) {
-                        final isSelected = index == widget.selectedEpisodeIndex;
+                        final isSelected =
+                            index == widget.selectedEpisodeIndex;
                         return GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () {
@@ -1636,54 +1641,58 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
+            // 顶部可点击空白：关闭 sheet。用 SizedBox 而不是 Expanded
+            // （见 _buildEpisodeOverlay 同款注释）
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () => setState(() => _showSettingsSheet = false),
-              child: const Expanded(child: SizedBox.shrink()),
+              child: const SizedBox(height: 1, width: double.infinity),
             ),
             Container(
               constraints: const BoxConstraints(maxHeight: 480),
               margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 20),
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
               decoration: BoxDecoration(
                 color: const Color(0xFF1E1E1E),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Column(
-                // 关键：必须用 max + Expanded，否则 Flexible(loose) 拿不到有界
-                // 高度，整个 body 被压成 0 → 用户看到的就是蒙层 + 标题细条
-                // = 视觉上的"灰屏"（也就是"包含预设按钮的页面未能正确加载"）。
-                mainAxisSize: MainAxisSize.max,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Row(
-                    children: [
-                      const Text(
-                        '播放设置',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const Spacer(),
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () =>
-                            setState(() => _showSettingsSheet = false),
-                        child: const Padding(
-                          padding: EdgeInsets.all(4),
-                          child: Icon(
-                            Icons.close,
-                            color: Colors.white70,
-                            size: 18,
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                    child: Row(
+                      children: [
+                        const Text(
+                          '播放设置',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
-                      ),
-                    ],
+                        const Spacer(),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () =>
+                              setState(() => _showSettingsSheet = false),
+                          child: const Padding(
+                            padding: EdgeInsets.all(4),
+                            child: Icon(
+                              Icons.close,
+                              color: Colors.white70,
+                              size: 18,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 8),
-                  Expanded(
+                  // 用 SizedBox 给 SingleChildScrollView 固定高度（Swift 版
+                  // List 的精确对等实现），不依赖 Expanded/Column(max) 的复杂布局
+                  SizedBox(
+                    height: 360,
                     child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
