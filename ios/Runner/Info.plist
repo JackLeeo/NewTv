@@ -47,8 +47,12 @@
 		<string>$(FLUTTER_BUILD_NUMBER)</string>
 		<key>LSRequiresIPhoneOS</key>
 		<true/>
-		<key>UILaunchStoryboardName</key>
-		<string>LaunchScreen</string>
+		<!-- iOS 13+ 推荐配置：用 UILaunchScreen 字典替代 LaunchScreen.storyboard。
+		     不引用任何 storyboard / 图片 / 颜色，编译产物最小、加载最快。
+		     iOS 系统会显示一帧系统默认空白（无 logo 无图无背景色），巨魔应用不上架，
+		     可以接受这个最轻量占位。 -->
+		<key>UILaunchScreen</key>
+		<dict/>
 		<key>UIMainStoryboardFile</key>
 		<string>Main</string>
 		<key>UISupportedInterfaceOrientations</key>
