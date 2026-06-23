@@ -8,3 +8,8 @@ ios/Runner.xcodeproj/xcshareddata/** text eol=lf
 ios/Flutter/Generated.xcconfig text eol=lf
 ios/Flutter/Debug.xcconfig text eol=lf
 ios/Flutter/Release.xcconfig text eol=lf
+
+# Dart / Flutter 项目源码也用 LF（autocrlf=true 会被 CRLF 替换，需显式覆盖）
+lib/**/*.dart text eol=lf
+pubspec.yaml text eol=lf
+pubspec.lock text eol=lf
