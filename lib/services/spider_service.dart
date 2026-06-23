@@ -11,12 +11,20 @@ class SpiderService {
   static final SpiderService _instance = SpiderService._internal();
   static SpiderService get instance => _instance;
 
-  final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 60),
-    receiveTimeout: const Duration(seconds: 60),
-  ));
+  // 必须可重建：iOS 进入后台/锁屏时，系统的 socket 会被断开，
+  // 不重建会导致切回前台后所有请求都失败（点击线路/视频无响应）
+  late Dio _dio;
 
-  SpiderService._internal();
+  SpiderService._internal() {
+    _dio = _buildDio();
+  }
+
+  static Dio _buildDio() {
+    return Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 60),
+      receiveTimeout: const Duration(seconds: 60),
+    ));
+  }
 
   // ============================================================
   // Spider 端口（从 NodeJSManager 获取）
@@ -266,9 +274,15 @@ class SpiderService {
   }
 
   /// 使当前 Spider 会话失效 - 对应 Swift invalidateSession
+  /// 关键：必须同时关闭并重建 dio，否则 iOS 后台/锁屏后切回前台时
+  /// dio 复用的 socket 已被系统断开，所有请求会静默失败
   void invalidateSession() {
     _currentKey = null;
     _currentType = null;
     _currentApiBase = null;
+    try {
+      _dio.close(force: true);
+    } catch (_) {}
+    _dio = _buildDio();
   }
 }

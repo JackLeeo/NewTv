@@ -2,6 +2,7 @@ import 'package:get/get.dart';
 import '../../models/movie.dart';
 import '../../models/movie_sort.dart';
 import '../../services/api_config.dart';
+import '../../services/app_state.dart';
 import '../../services/source_service.dart';
 
 class HomeController extends GetxController {
@@ -24,6 +25,13 @@ class HomeController extends GetxController {
   /// 当前显示的视频列表：对应 Swift contentArea 中的 viewModel.categoryVideos
   List<Video> get displayVideos => categoryVideos;
 
+  /// Worker：监听 AppState.loadingPhase
+  /// 用于后台/锁屏切回前台时，AppState.handleSceneActive 完成重连后
+  /// 自动刷新首页数据（之前 dio socket 死连接，homeSourceBean 引用未变，
+  /// ever 监听不会触发，导致页面数据陈旧且请求失败）
+  Worker? _loadingPhaseWorker;
+  LoadingPhase? _lastObservedPhase;
+
   @override
   void onInit() {
     super.onInit();
@@ -33,8 +41,33 @@ class HomeController extends GetxController {
         refresh();
       }
     });
+
+    // 监听 AppState 加载阶段：仅 reconnecting → completed 时刷新
+    // 这样应用从后台/锁屏切回时，handleSceneActive 完成重连后会刷新数据
+    // 首次启动的 completed 不触发，避免与 onInit 的 loadSorts 重复
+    try {
+      final appState = Get.find<AppState>();
+      _lastObservedPhase = appState.loadingPhase.value;
+      _loadingPhaseWorker = ever<LoadingPhase>(appState.loadingPhase, (phase) {
+        final prev = _lastObservedPhase;
+        _lastObservedPhase = phase;
+        if (phase == LoadingPhase.completed &&
+            prev == LoadingPhase.reconnecting) {
+          refresh();
+        }
+      });
+    } catch (_) {
+      // AppState 还未注册（例如测试场景），忽略
+    }
+
     // 首次加载
     loadSorts();
+  }
+
+  @override
+  void onClose() {
+    _loadingPhaseWorker?.dispose();
+    super.onClose();
   }
 
   Future<void> loadSorts() async {

@@ -316,11 +316,18 @@ class AppState extends GetxController {
   // ============================================================
 
   /// 应用恢复前台时检查服务状态 - 对应 Swift handleSceneActive
+  /// 关键：必须**立即**重建 dio，而不是等到端口检查失败后才重建。
+  /// 否则 iOS 后台/锁屏后切回前台时，dio 复用的 socket 已被系统断开，
+  /// 用户的下一次点击会立即发起请求（用死 socket）而失败。
   Future<void> handleSceneActive() async {
     if (!isConfigLoaded.value) return;
     final hasSpiderSource =
         ApiConfig.instance.sourceBeanList.any((s) => s.isSpiderSource);
     if (!hasSpiderSource) return;
+
+    // 立即重建 dio：恢复 iOS 后台断开的 socket
+    SpiderService.instance.invalidateSession();
+    NetworkManager.instance.invalidateSession();
 
     final spiderPort = NodeJSManager.instance.spiderPort;
     final nodeIsRunning = NodeJSManager.instance.isRunning;
@@ -330,8 +337,6 @@ class AppState extends GetxController {
     }
 
     loadingPhase.value = LoadingPhase.reconnecting;
-    SpiderService.instance.invalidateSession();
-    NetworkManager.instance.invalidateSession();
 
     if (!nodeIsRunning) {
       _nodeJSStarted = false;
