@@ -1534,7 +1534,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
               child: const SizedBox(height: 1, width: double.infinity),
             ),
             Container(
-              constraints: const BoxConstraints(maxHeight: 320),
+              // maxHeight 减小：之前 320 太大，遮挡视频画面（占屏幕 50%+）
+              constraints: const BoxConstraints(maxHeight: 240),
               margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 20),
               decoration: BoxDecoration(
                 color: const Color(0xFF1E1E1E),
@@ -1572,10 +1573,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                       ],
                     ),
                   ),
-                  // 用 SizedBox 给 GridView 固定高度（Swift 版 ScrollView+maxHeight
-                  // 的精确对等实现），不依赖 Expanded/Column(max) 的复杂布局
+                  // 用 SizedBox 给 GridView 适度高度（Swift 版 ScrollView+maxHeight
+                  // 的精确对等实现），不依赖 Expanded/Column(max) 的复杂布局。
+                  // 高度从 256 减小到 168：6 集以内自适应不浪费空间，遮挡视频更少；
+                  // 集数过多时 GridView 在 168 内可滚。
                   SizedBox(
-                    height: 256,
+                    height: 168,
                     child: GridView.builder(
                       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                       gridDelegate:
@@ -1649,7 +1652,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
               child: const SizedBox(height: 1, width: double.infinity),
             ),
             Container(
-              constraints: const BoxConstraints(maxHeight: 480),
+              // maxHeight 减小：之前 480 太大遮挡视频画面（占屏幕 80%+）
+              constraints: const BoxConstraints(maxHeight: 360),
               margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 20),
               decoration: BoxDecoration(
                 color: const Color(0xFF1E1E1E),
@@ -1687,10 +1691,11 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                       ],
                     ),
                   ),
-                  // 用 SizedBox 给 SingleChildScrollView 固定高度（Swift 版
-                  // List 的精确对等实现），不依赖 Expanded/Column(max) 的复杂布局
+                  // 高度从 360 减小到 240：常见设置项 ~3-4 个（片头/片尾/播放信息），
+                  // shrinkWrap + NeverScrollableScrollPhysics 让 SingleChildScrollView
+                  // 收缩到内容高度，遮挡视频更少；超过 maxHeight 360 时仍可滚。
                   SizedBox(
-                    height: 360,
+                    height: 240,
                     child: SingleChildScrollView(
                       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                       child: Column(

@@ -16,16 +16,28 @@
                     <view key="view" contentMode="scaleToFill" id="Ze5-6b-2t3">
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                         <subviews>
-                            <!-- 启动页 logo 已删除（来自旧项目的残留），
-                                 背景由 AppTheme 主题色填充，避免出现旧版 logo -->
+                            <!-- 背景填充：与 AppTheme 主色一致（Color(0xFF0F0F0F)） -->
                             <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleToFill" image="LaunchBackground" translatesAutoresizingMaskIntoConstraints="NO" id="tWc-Dq-wcI"/>
+                            <!-- 应用图标居中：120x120（iOS HIG 推荐的启动页 logo 尺寸） -->
+                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" image="LaunchImage" translatesAutoresizingMaskIntoConstraints="NO" id="QNM-OB-iKh">
+                                <rect key="frame" x="0.0" y="0.0" width="120" height="120"/>
+                                <constraints>
+                                    <constraint firstAttribute="width" constant="120" id="wid-OB-QNM"/>
+                                    <constraint firstAttribute="height" constant="120" id="hgt-OB-QNM"/>
+                                </constraints>
+                            </imageView>
                         </subviews>
+                        <!-- 背景色：AppTheme 主色 #0F0F0F，与 home / detail / setup 一致 -->
                         <color key="backgroundColor" red="0.0588235" green="0.0588235" blue="0.0588235" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
                         <constraints>
+                            <!-- 背景图铺满 -->
                             <constraint firstItem="tWc-Dq-wcI" firstAttribute="bottom" secondItem="Ze5-6b-2t3" secondAttribute="bottom" id="RPx-PI-7Xg"/>
                             <constraint firstItem="tWc-Dq-wcI" firstAttribute="top" secondItem="Ze5-6b-2t3" secondAttribute="top" id="SdS-ul-q2q"/>
                             <constraint firstAttribute="trailing" secondItem="tWc-Dq-wcI" secondAttribute="trailing" id="Swv-Gf-Rwn"/>
                             <constraint firstItem="tWc-Dq-wcI" firstAttribute="leading" secondItem="Ze5-6b-2t3" secondAttribute="leading" id="kV7-tw-vXt"/>
+                            <!-- 应用图标水平+垂直居中 -->
+                            <constraint firstItem="QNM-OB-iKh" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="cx-OB-QNM"/>
+                            <constraint firstItem="QNM-OB-iKh" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" id="cy-OB-QNM"/>
                         </constraints>
                     </view>
                 </viewController>
@@ -36,5 +48,6 @@
     </scenes>
     <resources>
         <image name="LaunchBackground" width="1" height="1"/>
+        <image name="LaunchImage" width="1024" height="1024"/>
     </resources>
 </document>
