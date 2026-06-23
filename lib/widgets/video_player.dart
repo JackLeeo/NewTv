@@ -130,6 +130,25 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   late final Player _player;
   late final VideoController _controller;
   bool _ownsPlayer = false; // 是否自己创建并需要释放
+
+  /// 跨 widget rebuild 持久化的状态缓存（按 widget.key 区分）。
+  ///
+  /// **为什么要缓存**：detail view 在 immersive 切换时
+  /// `_buildBody` 返回的 widget tree 结构不同
+  /// （`SingleChildScrollView > Column > [_buildPlayerArea, ...]`
+  ///  vs 顶层直接 `_buildPlayerArea`），导致 VideoPlayerWidget 的
+  /// Element 被销毁 + 重建，state 重置 → `_isNativeFullscreen` 退回
+  /// false → 全屏 icon 卡在"放大"，必须再点一次才能切到"缩小"再触发退出。
+  ///
+  /// 把 `_isNativeFullscreen` / `_isImmersive` 缓存到 static map
+  /// （按 widget key 索引），widget 重建时 initState 从缓存读回原值，
+  /// 状态在 widget Element 生命周期外依然保留。
+  static final Map<String, _PersistedPlayerState> _stateCache =
+      <String, _PersistedPlayerState>{};
+
+  late final _PersistedPlayerState _persisted;
+  late final String _cacheKey;
+
   bool _isPlaying = false;
   /// 缓冲状态：不再默认 true，而是从 player.state 同步读取，避免全屏/普通模式
   /// 切换时新实例显示"转圈"假象
@@ -192,6 +211,18 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   @override
   void initState() {
     super.initState();
+    // 跨 widget rebuild 持久化状态（按 widget.key 区分）
+    // detail view 在 immersive 切换时会重建 VideoPlayerWidget 的 Element，
+    // 没有这个缓存，state 重置会导致全屏 icon 卡住需要点两次。
+    _cacheKey = widget.key?.toString() ?? '_VideoPlayerWidget_default_';
+    _persisted = _stateCache.putIfAbsent(
+      _cacheKey,
+      () => _PersistedPlayerState(),
+    );
+    // 从缓存读回上次的全屏状态（如果上次处于全屏，用户切走再回来要保持）
+    _isNativeFullscreen = _persisted.isNativeFullscreen;
+    _isImmersive = _persisted.isImmersive;
+
     if (widget.player != null) {
       _player = widget.player!;
       _ownsPlayer = false;
@@ -288,6 +319,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     if (isActive != _isNativeFullscreen) {
       setState(() {
         _isNativeFullscreen = isActive;
+        // 同步写入持久化缓存，避免 widget Element 重建时状态丢失
+        _persisted.isNativeFullscreen = isActive;
         // 立即 rebuild：让 icon 立即切换
         _videoRebuildKey++;
       });
@@ -471,6 +504,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     // 标记 iOS 端 immersive 状态（先于 WindowFullScreen.enter 避免 listener
     // 触发时 `_isImmersive` 还没翻）
     _isImmersive = true;
+    _persisted.isImmersive = true;
     try {
       await WindowFullScreen.instance.enter();
       debugPrint('=== _enterFullScreen: WindowFullScreen enter OK ===');
@@ -1983,6 +2017,21 @@ class _GestureHintBubble extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 跨 widget rebuild 持久化的 player 状态（静态缓存的值对象）
+///
+/// 字段：
+/// - [isNativeFullscreen]：是否在全屏（与 iOS immersive / 桌面 native 同步）
+/// - [isImmersive]：iOS 端是否处于 immersive 模式
+///
+/// **生命周期**：由 [_VideoPlayerWidgetState._stateCache] 按 widget.key 持有；
+/// widget Element 重建时 initState 从缓存读回，状态在 Element 生命周期外保留。
+/// 用户离开 detail 页面（`dispose`）后**不主动清空**，下次用同 key 复用
+/// （detail view 用固定 `ValueKey('detail_player')`）。
+class _PersistedPlayerState {
+  bool isNativeFullscreen = false;
+  bool isImmersive = false;
 }
 
 class _SettingsRowLabel extends StatelessWidget {
