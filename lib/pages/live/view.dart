@@ -162,8 +162,14 @@ class _LivePageState extends State<LivePage> {
         Column(
           children: [
             // 顶部 - 对应 Swift HStack(channelDrawerToggleButton + Spacer)
+            // 关键修复: 加上 MediaQuery.padding.top (状态栏高度)
+            // 之前固定 top: 18, iOS 状态栏约 44pt,按钮被遮挡,收缩后点击不到
             Padding(
-              padding: const EdgeInsets.only(top: 18, left: 16, right: 16),
+              padding: EdgeInsets.only(
+                top: MediaQuery.of(context).padding.top + 8,
+                left: 16,
+                right: 16,
+              ),
               child: Row(
                 children: [
                   _buildChannelDrawerToggleButton(),
@@ -186,9 +192,15 @@ class _LivePageState extends State<LivePage> {
         ),
 
         // 频道抽屉 - 对应 Swift channelDrawer
+        // 关键修复: 加上 MediaQuery.padding.top (状态栏高度)
+        // 之前固定 top: 20,抽屉被状态栏遮挡,分组列表/频道列表部分内容看不到
         if (_showChannelDrawer)
           Padding(
-            padding: const EdgeInsets.only(left: 12, top: 20, bottom: 20),
+            padding: EdgeInsets.only(
+              left: 12,
+              top: MediaQuery.of(context).padding.top + 12,
+              bottom: 20,
+            ),
             child: _buildChannelDrawer(),
           ),
       ],
