@@ -84,6 +84,7 @@ class VideoPlayerWidget extends StatefulWidget {
   final ValueChanged<Duration>? onPositionChanged;
   final VoidCallback? onEnded;
   final VoidCallback? onError;
+
   /// 全屏状态变化回调（true=进入全屏，false=退出全屏）
   /// detail view 收到后切换 immersive 模式（隐藏 AppBar、video 铺满）
   final ValueChanged<bool>? onFullScreenChanged;
@@ -151,6 +152,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   late final String _cacheKey;
 
   bool _isPlaying = false;
+
   /// 缓冲状态：不再默认 true，而是从 player.state 同步读取，避免全屏/普通模式
   /// 切换时新实例显示"转圈"假象
   bool _isBuffering = false;
@@ -179,6 +181,15 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// 长按倍速中：用于在 UI 上显示 "2X" 提示
   bool _isLongPressingFast = false;
 
+  /// 长按倍速已锁定：上滑超过阈值后保持 2X 倍速，抬手不恢复
+  bool _isLongPressSpeedLocked = false;
+
+  /// 上滑锁定倍速的垂直位移阈值（手指向上滑过这么多像素视为锁定）
+  static const double _longPressLockUpwardThreshold = 80.0;
+
+  /// 待 seek 的续播位置（秒）。每次 _openMedia 后清零，避免重复 seek。
+  double? _pendingResumeSeconds;
+
   /// 用于强制重建 Video widget，绕过 ANGLE surface 失效导致的黑屏
   int _videoRebuildKey = 0;
 
@@ -198,7 +209,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   String _gestureHorizontalHint = ''; // 顶部水平拖动提示
 
   static const List<double> _supportedSpeeds = [
-    0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0,
+    0.5,
+    0.75,
+    1.0,
+    1.25,
+    1.5,
+    2.0,
+    3.0,
   ];
   static const Duration _hideDelay = Duration(seconds: 5);
   static const int _seekStep = 10;
@@ -256,7 +273,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       _player = widget.player!;
       _ownsPlayer = false;
     } else {
-      _player = Player(configuration: const PlayerConfiguration(title: 'TVBox'));
+      _player = Player(
+        configuration: const PlayerConfiguration(title: 'TVBox'),
+      );
       _ownsPlayer = true;
     }
     // 优先复用外部注入的 VideoController（共享 player handle 即可保证 texture
@@ -310,6 +329,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     _volume = _player.state.volume;
     if (_ownsPlayer) {
       _openMedia();
+    } else {
+      // 外部注入 player（detail view 的常规路径）：build 期间 _ensurePlayer
+      // 已经调过 _player.open(Media(url))，这里只等播放器就绪后 seek
+      _scheduleResumeSeek();
     }
     _scheduleHideControls();
     _startBitrateTimer();
@@ -343,8 +366,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   void _onWindowFullScreenChanged() {
     if (!mounted) return;
     // 实际"是否在 fullscreen"= 桌面端 native fullscreen OR iOS 端 immersive
-    final isActive =
-        WindowFullScreen.instance.isActive || _isImmersive;
+    final isActive = WindowFullScreen.instance.isActive || _isImmersive;
     if (isActive != _isNativeFullscreen) {
       setState(() {
         _isNativeFullscreen = isActive;
@@ -435,12 +457,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           stateName == 'charging'
               ? Icons.battery_charging_full
               : _batteryLevel > 80
-                  ? Icons.battery_full
-                  : _batteryLevel > 50
-                      ? Icons.battery_5_bar
-                      : _batteryLevel > 20
-                          ? Icons.battery_3_bar
-                          : Icons.battery_1_bar,
+              ? Icons.battery_full
+              : _batteryLevel > 50
+              ? Icons.battery_5_bar
+              : _batteryLevel > 20
+              ? Icons.battery_3_bar
+              : Icons.battery_1_bar,
           color: Colors.white,
           size: 16,
           shadows: const [
@@ -468,14 +490,78 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     if (oldWidget.player != widget.player) {
       // 不做热切换：避免与外部管理冲突
     }
-    if (_ownsPlayer && oldWidget.url != widget.url) {
-      _openMedia();
+    // url 变化（新一集/新清晰度/外部 player.open）→ 触发续播 seek
+    if (oldWidget.url != widget.url) {
+      // url 变化：清理长按倍速锁定状态（基速可能也变了）
+      if (_isLongPressSpeedLocked || _isLongPressingFast) {
+        setState(() {
+          _isLongPressSpeedLocked = false;
+          _isLongPressingFast = false;
+        });
+        try {
+          _player.setRate(_playbackSpeed);
+        } catch (_) {}
+      }
+      if (_ownsPlayer) {
+        _openMedia();
+      } else {
+        // 外部注入 player（detail view 的常规路径），由 detail view 负责
+        // _player.open(Media(...))，这里只等播放器就绪后 seek 到历史位置
+        _scheduleResumeSeek();
+      }
+    } else if ((oldWidget.resumeSeconds ?? -1) !=
+            (widget.resumeSeconds ?? -1) &&
+        widget.resumeSeconds != null &&
+        widget.resumeSeconds! > 0) {
+      // 同一 url 但 resumeSeconds 变化（例如清晰度切换时 _controller.currentPlaybackSeconds
+      // 透传到 resumeSeconds 用于记录）→ 不重复 seek（onPositionChanged 已经在持续更新）
     }
   }
 
   void _openMedia() {
     final headers = widget.headers ?? {};
     _player.open(Media(widget.url, httpHeaders: headers));
+    // 续播：等播放器就绪（duration 第一次有效）后 seek 到历史位置
+    _scheduleResumeSeek();
+  }
+
+  /// 续播 seek：等播放器就绪（duration 第一次 > 0）后 seek 到历史位置
+  /// 必须在 _player.open() 之后调用，否则 seek 会因播放器未就绪而失败
+  ///
+  /// **防重入**：用 `_pendingResumeSeconds` 字段做去重。如果期间 widget.url
+  /// 变化（用户切换集），新值会覆盖旧值；旧 listener 触发时检查到
+  /// `_pendingResumeSeconds` 已经被替换就会 skip，避免把旧 url 的历史位置
+  /// seek 到新 url 上。
+  void _scheduleResumeSeek() {
+    final resume = widget.resumeSeconds;
+    if (resume == null || resume <= 0) return;
+    // 占位：标记本次 seek 任务；后续如果 resume 变化可被新任务覆盖
+    _pendingResumeSeconds = resume;
+    // 用 firstWhere 等 duration 第一次有效，8 秒兜底超时
+    _player.stream.duration
+        .firstWhere((d) => d.inMilliseconds > 0)
+        .timeout(const Duration(seconds: 8), onTimeout: () => Duration.zero)
+        .then((_) {
+          if (!mounted) return;
+          final pending = _pendingResumeSeconds;
+          if (pending == null || pending <= 0) return;
+          // 如果期间 _pendingResumeSeconds 被新值覆盖，不要 seek 旧值
+          if (pending != resume) return;
+          _pendingResumeSeconds = null;
+          // 用一个微延迟让 position stream 先被外部 listen 起来，避免首次 seek 丢事件
+          Future<void>.delayed(const Duration(milliseconds: 100), () {
+            if (!mounted) return;
+            try {
+              _player.seek(Duration(seconds: pending.toInt()));
+              debugPrint('=== _scheduleResumeSeek: seek 到 ${pending}s ===');
+            } catch (e) {
+              debugPrint('=== _scheduleResumeSeek: seek 失败: $e ===');
+            }
+          });
+        })
+        .catchError((e) {
+          debugPrint('=== _scheduleResumeSeek: 等待 duration 失败: $e ===');
+        });
   }
 
   void _startBitrateTimer() {
@@ -532,9 +618,24 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   }
 
   void _toggleControls() {
+    // 长按倍速锁定时：单击只解除锁定，不切换控制条
+    if (_isLongPressSpeedLocked) {
+      _unlockLongPressSpeed();
+      return;
+    }
     if (_isLocked) return;
     setState(() => _showControls = !_showControls);
     if (_showControls) _scheduleHideControls();
+  }
+
+  /// 解除长按倍速锁定：恢复 _playbackSpeed，清掉相关标志
+  void _unlockLongPressSpeed() {
+    if (!_isLongPressSpeedLocked && !_isLongPressingFast) return;
+    setState(() {
+      _isLongPressSpeedLocked = false;
+      _isLongPressingFast = false;
+    });
+    _player.setRate(_playbackSpeed);
   }
 
   void _togglePlayPause() {
@@ -570,11 +671,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   Future<void> _onUserToggleFullscreen() async {
     // 用真实状态决策,而非陈旧的 _isNativeFullscreen
     // (避免用户用 Esc / 系统级操作退出全屏后,icon 状态未同步导致必须点两次)
-    final currentlyFull =
-        WindowFullScreen.instance.isActive || _isImmersive;
-    debugPrint('=== _onUserToggleFullscreen: currentlyFull=$currentlyFull '
-        'isActive=${WindowFullScreen.instance.isActive} '
-        '_isImmersive=$_isImmersive ===');
+    final currentlyFull = WindowFullScreen.instance.isActive || _isImmersive;
+    debugPrint(
+      '=== _onUserToggleFullscreen: currentlyFull=$currentlyFull '
+      'isActive=${WindowFullScreen.instance.isActive} '
+      '_isImmersive=$_isImmersive ===',
+    );
     // 互斥：先退出 PiP
     if (VideoPlayerPip.instance.isActive) {
       await VideoPlayerPip.instance.exit();
@@ -592,7 +694,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// - 处于 PiP 模式：退出 PiP
   /// - 处于正常模式：当作返回键
   Future<void> _onUserExitFullscreen() async {
-    debugPrint('=== _onUserExitFullscreen: _isNativeFullscreen=$_isNativeFullscreen, isPip=${VideoPlayerPip.instance.isActive} ===');
+    debugPrint(
+      '=== _onUserExitFullscreen: _isNativeFullscreen=$_isNativeFullscreen, isPip=${VideoPlayerPip.instance.isActive} ===',
+    );
     if (_isNativeFullscreen) {
       await _exitFullScreen();
       return;
@@ -710,8 +814,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     final clamped = position < Duration.zero
         ? Duration.zero
         : (position > _duration && _duration > Duration.zero
-            ? _duration
-            : position);
+              ? _duration
+              : position);
     _player.seek(clamped);
   }
 
@@ -935,6 +1039,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         if (_showForwardSeek || _showBackwardSeek)
           _buildSeekIndicator(_showForwardSeek),
 
+        // 长按倍速提示 (屏幕中央 2X + 上滑锁定提示)
+        if (_isLongPressingFast || _isLongPressSpeedLocked)
+          _buildLongPressSpeedHint(),
+
         // 剧集选择覆盖层
         if (_showEpisodeSheet) _buildEpisodeOverlay(),
 
@@ -957,14 +1065,48 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         // （Flutter 默认会让长按等待双击判定窗口结束，从而失效）。
         return GestureDetector(
           behavior: HitTestBehavior.translucent,
-          // 外层只处理长按：长按 2 倍速
-          onLongPressStart: (_) {
+          // 外层只处理长按：长按 2 倍速 + 上滑锁定倍速
+          onLongPressStart: (details) {
             if (_isLocked) return;
+            // 锁定状态下再次长按：直接解除锁定（不切换速度）
+            if (_isLongPressSpeedLocked) {
+              setState(() {
+                _isLongPressSpeedLocked = false;
+                _isLongPressingFast = false;
+              });
+              _player.setRate(_playbackSpeed);
+              return;
+            }
             _player.setRate(_playbackSpeed * 2);
             setState(() => _isLongPressingFast = true);
           },
+          onLongPressMoveUpdate: (details) {
+            if (_isLocked) return;
+            // 锁定状态下不再检测上滑
+            if (_isLongPressSpeedLocked) return;
+            // 上滑超过阈值 → 锁定倍速（抬手不恢复）
+            // offsetFromOrigin 是从长按开始触点开始的累计偏移,
+            // dy 负值表示手指向上滑
+            if (details.offsetFromOrigin.dy < -_longPressLockUpwardThreshold) {
+              setState(() => _isLongPressSpeedLocked = true);
+            }
+          },
           onLongPressEnd: (_) {
             if (_isLocked) return;
+            // 锁定状态下抬手：保持 2X 倍速，仅清掉"按下中"标志
+            if (_isLongPressSpeedLocked) {
+              setState(() => _isLongPressingFast = false);
+              return;
+            }
+            _player.setRate(_playbackSpeed);
+            setState(() => _isLongPressingFast = false);
+          },
+          onLongPressCancel: () {
+            if (_isLocked) return;
+            if (_isLongPressSpeedLocked) {
+              setState(() => _isLongPressingFast = false);
+              return;
+            }
             _player.setRate(_playbackSpeed);
             setState(() => _isLongPressingFast = false);
           },
@@ -1000,8 +1142,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
               final absDy = dy.abs();
 
               // 第一次确定手势方向
-              _gesturePanAxis ??=
-                  absDx > absDy * 1.5 ? PanAxis.horizontal : PanAxis.vertical;
+              _gesturePanAxis ??= absDx > absDy * 1.5
+                  ? PanAxis.horizontal
+                  : PanAxis.vertical;
 
               if (_gesturePanAxis == PanAxis.horizontal) {
                 if (_duration > Duration.zero) {
@@ -1009,8 +1152,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                   // 屏幕宽度对应整个 duration 的 30%
                   final scale = totalMs * 0.3;
                   final deltaMs = (dx / width) * scale;
-                  _gestureSeekTemp =
-                      (_gestureSeekTemp + deltaMs).clamp(0.0, totalMs);
+                  _gestureSeekTemp = (_gestureSeekTemp + deltaMs).clamp(
+                    0.0,
+                    totalMs,
+                  );
                   final newPos = Duration(
                     milliseconds: _gestureSeekTemp.round(),
                   );
@@ -1026,16 +1171,18 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
               } else {
                 // 垂直：左侧亮度，右侧音量
                 if (_gesturePanStartPosition.dx < width / 2) {
-                  final newB = (_gestureInitialBrightness - dy / constraints.maxHeight)
-                      .clamp(0.0, 1.0);
+                  final newB =
+                      (_gestureInitialBrightness - dy / constraints.maxHeight)
+                          .clamp(0.0, 1.0);
                   _setBrightness(newB);
                   setState(() {
                     _showBrightnessIndicator = true;
                     _showVolumeIndicator = false;
                   });
                 } else {
-                  final newV = (_gestureInitialVolume - dy / constraints.maxHeight)
-                      .clamp(0.0, 1.0);
+                  final newV =
+                      (_gestureInitialVolume - dy / constraints.maxHeight)
+                          .clamp(0.0, 1.0);
                   setState(() {
                     _setVolume(newV);
                     _showVolumeIndicator = true;
@@ -1271,10 +1418,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                   _iconButton(
                     icon: _volume > 0
                         ? (_volume < 0.33
-                            ? Icons.volume_down
-                            : (_volume < 0.66
-                                ? Icons.volume_up
-                                : Icons.volume_up))
+                              ? Icons.volume_down
+                              : (_volume < 0.66
+                                    ? Icons.volume_up
+                                    : Icons.volume_up))
                         : Icons.volume_off,
                     size: 22,
                     width: 36,
@@ -1316,13 +1463,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   // ============================================================
 
   Widget _buildSkipButtons() {
-    final showIntro = widget.skipIntroSeconds > 0 &&
+    final showIntro =
+        widget.skipIntroSeconds > 0 &&
         _position.inSeconds > 0 &&
         _position.inSeconds < widget.skipIntroSeconds;
-    final showOutro = widget.skipOutroSeconds > 0 &&
+    final showOutro =
+        widget.skipOutroSeconds > 0 &&
         _duration > Duration.zero &&
-        _position.inSeconds >
-            _duration.inSeconds - widget.skipOutroSeconds;
+        _position.inSeconds > _duration.inSeconds - widget.skipOutroSeconds;
 
     if (!showIntro && !showOutro) return const SizedBox.shrink();
 
@@ -1395,6 +1543,93 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
             ? Icons.volume_off
             : (_volume < 0.5 ? Icons.volume_down : Icons.volume_up),
         text: '${(_volume * 100).round()}%',
+      ),
+    );
+  }
+
+  /// 长按倍速提示 - 屏幕中央圆形 2X 浮层
+  /// - 锁定时：显示 "已锁定 2X 倍速，单击取消"
+  /// - 按下中未锁定：显示 "2X 长按倍速中" + "↑ 上滑锁定"
+  Widget _buildLongPressSpeedHint() {
+    final speed = _playbackSpeed * 2;
+    final speedLabel = _formatSpeed(speed);
+    final locked = _isLongPressSpeedLocked;
+    return IgnorePointer(
+      child: Center(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: locked ? 0.7 : 0.55),
+            borderRadius: BorderRadius.circular(20),
+            border: locked
+                ? Border.all(color: AppTheme.accentColor, width: 1.5)
+                : null,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 倍速大字
+              Text(
+                speedLabel,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 36,
+                  fontWeight: FontWeight.w700,
+                  fontFamily: 'monospace',
+                  letterSpacing: 1.5,
+                ),
+              ),
+              const SizedBox(height: 4),
+              // 提示文字
+              Text(
+                locked ? '倍速已锁定' : '长按倍速中',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 8),
+              // 底部小提示
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (locked) ...[
+                    const Icon(
+                      Icons.touch_app,
+                      color: Colors.white70,
+                      size: 14,
+                    ),
+                    const SizedBox(width: 4),
+                    const Text(
+                      '点击屏幕解除锁定',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ] else ...[
+                    const Icon(
+                      Icons.arrow_upward,
+                      color: Colors.white70,
+                      size: 14,
+                    ),
+                    const SizedBox(width: 4),
+                    const Text(
+                      '上滑锁定倍速',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1575,6 +1810,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   // ============================================================
 
   Widget _buildSpeedMenu() {
+    // 长按倍速锁定时：实际播放速度是 _playbackSpeed * 2
+    final displaySpeed = _isLongPressSpeedLocked
+        ? _playbackSpeed * 2
+        : _playbackSpeed;
     return PopupMenuButton<double>(
       tooltip: '倍速',
       offset: const Offset(0, -180),
@@ -1582,7 +1821,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppTheme.radiusMD),
       ),
-      onSelected: _setSpeed,
+      onSelected: (speed) {
+        // 用户主动选倍速 → 解除长按倍速锁定
+        if (_isLongPressSpeedLocked) {
+          _unlockLongPressSpeed();
+        }
+        _setSpeed(speed);
+      },
       itemBuilder: (context) => _supportedSpeeds.map((speed) {
         final selected = (speed - _playbackSpeed).abs() < 0.01;
         return PopupMenuItem<double>(
@@ -1610,8 +1855,16 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         constraints: const BoxConstraints(minWidth: 38, minHeight: 30),
         child: Center(
           child: Text(
-            _formatSpeed(_playbackSpeed),
-            style: const TextStyle(color: Colors.white, fontSize: 13),
+            _formatSpeed(displaySpeed),
+            style: TextStyle(
+              color: _isLongPressSpeedLocked
+                  ? AppTheme.accentColor
+                  : Colors.white,
+              fontSize: 13,
+              fontWeight: _isLongPressSpeedLocked
+                  ? FontWeight.w700
+                  : FontWeight.normal,
+            ),
           ),
         ),
       ),
@@ -1739,15 +1992,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                       gridDelegate:
                           const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 5,
-                        crossAxisSpacing: 8,
-                        mainAxisSpacing: 8,
-                        childAspectRatio: 2.5,
-                      ),
+                            crossAxisCount: 5,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                            childAspectRatio: 2.5,
+                          ),
                       itemCount: widget.episodeNames.length,
                       itemBuilder: (context, index) {
-                        final isSelected =
-                            index == widget.selectedEpisodeIndex;
+                        final isSelected = index == widget.selectedEpisodeIndex;
                         return GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () {
@@ -1920,8 +2172,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     // 直接调 VideoPlayerPip.toggle() 会因为 unsupported platform 静默失败。
     // 给出明确提示让用户知道原因。
     if (Platform.isIOS) {
-      _showMessage('iOS 端画中画：当前版本暂未集成 AVPictureInPictureController。\n'
-          '如需小窗播放，请先退出全屏并手动从控制中心选择 AirPlay 设备。');
+      _showMessage(
+        'iOS 端画中画：当前版本暂未集成 AVPictureInPictureController。\n'
+        '如需小窗播放，请先退出全屏并手动从控制中心选择 AirPlay 设备。',
+      );
       return;
     }
     // 互斥：如果当前是全屏状态，先 await 退出全屏再进入 PiP
@@ -1959,7 +2213,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       '/dlna',
       parameters: {
         'url': playUrl,
-        'title': _displayTitle.isNotEmpty ? _displayTitle : (widget.videoTitle ?? ''),
+        'title': _displayTitle.isNotEmpty
+            ? _displayTitle
+            : (widget.videoTitle ?? ''),
       },
     );
   }
@@ -1968,12 +2224,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   void _showMessage(String text) {
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (messenger == null) return;
-    messenger.showSnackBar(SnackBar(
-      content: Text(text),
-      duration: const Duration(seconds: 3),
-      backgroundColor: Colors.black87,
-      behavior: SnackBarBehavior.floating,
-    ));
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(text),
+        duration: const Duration(seconds: 3),
+        backgroundColor: Colors.black87,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   // ============================================================
@@ -2125,15 +2383,21 @@ class _ProgressBarPainter extends CustomPainter {
 
     if (progress > 0) {
       final progressRect = RRect.fromRectAndRadius(
-        Rect.fromLTWH(0, centerY - trackHeight / 2,
-            size.width * progress, trackHeight),
+        Rect.fromLTWH(
+          0,
+          centerY - trackHeight / 2,
+          size.width * progress,
+          trackHeight,
+        ),
         Radius.circular(trackHeight / 2),
       );
       canvas.drawRRect(progressRect, Paint()..color = Colors.white);
     }
 
-    final thumbX =
-        (size.width * progress).clamp(thumbRadius, size.width - thumbRadius);
+    final thumbX = (size.width * progress).clamp(
+      thumbRadius,
+      size.width - thumbRadius,
+    );
     canvas.drawCircle(
       Offset(thumbX, centerY),
       thumbRadius,
