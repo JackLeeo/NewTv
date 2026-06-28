@@ -190,6 +190,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// 待 seek 的续播位置（秒）。每次 _openMedia 后清零，避免重复 seek。
   double? _pendingResumeSeconds;
 
+  /// 续播 seek 任务 generation 计数器：每次 _scheduleResumeSeek 调用都 +1，
+  /// listener 触发时检查是否被新调用"覆盖"（generation 不一致则 skip），
+  /// 保证多次调用 _scheduleResumeSeek（initState + didUpdateWidget +
+  /// _openMedia 三个入口都可能触发）只最终 seek 一次。
+  int _resumeSeekGeneration = 0;
+
   /// 用于强制重建 Video widget，绕过 ANGLE surface 失效导致的黑屏
   int _videoRebuildKey = 0;
 
@@ -528,25 +534,30 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// 续播 seek：等播放器就绪（duration 第一次 > 0）后 seek 到历史位置
   /// 必须在 _player.open() 之后调用，否则 seek 会因播放器未就绪而失败
   ///
-  /// **防重入**：用 `_pendingResumeSeconds` 字段做去重。如果期间 widget.url
-  /// 变化（用户切换集），新值会覆盖旧值；旧 listener 触发时检查到
-  /// `_pendingResumeSeconds` 已经被替换就会 skip，避免把旧 url 的历史位置
-  /// seek 到新 url 上。
+  /// **防重入（generation 计数器）**：每次调用 `_scheduleResumeSeek` 都将
+  /// `_resumeSeekGeneration` +1 并捕获到闭包 `myGen` 中。listener 触发时
+  /// 如果 `_resumeSeekGeneration != myGen`（说明期间被新调用覆盖了）就 skip。
+  /// 这保证：initState（外部 player 路径）+ didUpdateWidget（url 变化）+
+  /// _openMedia（自身 player 路径）三个入口**任意组合**多次调用，
+  /// 最终只 seek 一次最新的续播位置。
   void _scheduleResumeSeek() {
     final resume = widget.resumeSeconds;
-    if (resume == null || resume <= 0) return;
-    // 占位：标记本次 seek 任务；后续如果 resume 变化可被新任务覆盖
+    if (resume == null || resume <= 0) {
+      _pendingResumeSeconds = null;
+      return;
+    }
     _pendingResumeSeconds = resume;
+    final myGen = ++_resumeSeekGeneration;
     // 用 firstWhere 等 duration 第一次有效，8 秒兜底超时
     _player.stream.duration
         .firstWhere((d) => d.inMilliseconds > 0)
         .timeout(const Duration(seconds: 8), onTimeout: () => Duration.zero)
         .then((_) {
           if (!mounted) return;
+          // 期间被新的 _scheduleResumeSeek 调用覆盖了，跳过旧任务
+          if (myGen != _resumeSeekGeneration) return;
           final pending = _pendingResumeSeconds;
           if (pending == null || pending <= 0) return;
-          // 如果期间 _pendingResumeSeconds 被新值覆盖，不要 seek 旧值
-          if (pending != resume) return;
           _pendingResumeSeconds = null;
           // 用一个微延迟让 position stream 先被外部 listen 起来，避免首次 seek 丢事件
           Future<void>.delayed(const Duration(milliseconds: 100), () {
