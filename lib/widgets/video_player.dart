@@ -616,7 +616,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// `SystemChrome.setPreferredOrientations` 强制横屏，否则系统会保持
   /// 竖屏全屏（视频左右黑边）。
   Future<void> _enterFullScreen() async {
-    if (_isNativeFullscreen) return;
+    // 用真实状态判断,避免重复进入全屏
+    // 注意: 不能用陈旧 _isNativeFullscreen 字段判断 (widget Element 重建时会从 cache 读陈旧值)
+    if (WindowFullScreen.instance.isActive || _isImmersive) {
+      debugPrint('=== _enterFullScreen: skip (已处于全屏) ===');
+      return;
+    }
     debugPrint('=== _enterFullScreen: start ===');
     // iOS 端：先强制横屏（必须在通知 detail view 切换 immersive 之前）
     if (Platform.isIOS) {
@@ -625,21 +630,24 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         DeviceOrientation.landscapeRight,
       ]);
     }
+    // **关键**: 先写缓存, 再通知 detail view 切换 immersive 模式
+    // 这样 detail view rebuild 导致 widget Element 销毁重建时,
+    // 新 Element 的 initState 从 cache 读到的就是正确的全屏状态
+    _isImmersive = true;
+    _isNativeFullscreen = true;
+    _persisted.isImmersive = true;
+    _persisted.isNativeFullscreen = true;
     // 通知 detail view 切换 immersive 模式（隐藏 AppBar、视频铺满）
     widget.onFullScreenChanged?.call(true);
-    // 标记 iOS 端 immersive 状态（先于 WindowFullScreen.enter 避免 listener
-    // 触发时 `_isImmersive` 还没翻）
-    _isImmersive = true;
-    _persisted.isImmersive = true;
     try {
       await WindowFullScreen.instance.enter();
       debugPrint('=== _enterFullScreen: WindowFullScreen enter OK ===');
     } catch (e) {
       debugPrint('=== _enterFullScreen: WindowFullScreen enter failed: $e ===');
     }
-    // 兜底同步：iOS 端必须（WindowFullScreen 不触发 activeNotifier）；
-    // 桌面端 WindowFullScreen 已经触发过 listener，这里 no-op。
-    _onWindowFullScreenChanged();
+    // 兜底同步: 桌面端 activeNotifier 已触发过 listener (在 mounted 新 Element 上)
+    // iOS 端 no-op, 用 cache 写入保证状态正确
+    if (mounted) _onWindowFullScreenChanged();
     // 确保 player 在播放（窗口 resize 可能让 mpv 进入 pause 状态）
     try {
       if (!_player.state.playing) {
@@ -662,10 +670,15 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       return;
     }
     debugPrint('=== _exitFullScreen: start ===');
+    // **关键**: 先写缓存, 再通知 detail view 切回正常模式
+    // detail view rebuild 会销毁 video player Element + 创建新 Element,
+    // 新 Element 的 initState 从 cache 读到的应该是退出全屏状态
+    _isImmersive = false;
+    _isNativeFullscreen = false;
+    _persisted.isImmersive = false;
+    _persisted.isNativeFullscreen = false;
     // 通知 detail view 切回正常模式
     widget.onFullScreenChanged?.call(false);
-    // 先标记 iOS 端 immersive 状态已退出
-    _isImmersive = false;
     try {
       await WindowFullScreen.instance.exit();
       debugPrint('=== _exitFullScreen: WindowFullScreen exit OK ===');
@@ -682,8 +695,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     }
     // 等待窗口 resize 完成再继续
     await Future<void>.delayed(const Duration(milliseconds: 100));
-    // 兜底同步：iOS 端必须；桌面端 no-op
-    _onWindowFullScreenChanged();
+    // 兜底同步: 仅在当前 Element 仍 mounted 时执行
+    // (await 期间 detail view 可能已 rebuild 销毁当前 Element)
+    if (mounted) _onWindowFullScreenChanged();
     // 确保 player 在播放
     try {
       if (!_player.state.playing) {
@@ -1181,8 +1195,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   // ============================================================
 
   Widget _buildLockButton() {
+    // iOS 横屏时左侧 notch 也会占位, 用 MediaQuery.padding.left 偏移
+    final leftSafe = MediaQuery.of(context).padding.left;
     return Positioned(
-      left: 12,
+      left: 12 + leftSafe,
       top: 0,
       bottom: 0,
       child: Center(
@@ -1972,6 +1988,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   }
 
   Widget _gradientTopContainer({required Widget child}) {
+    // iOS 横屏时 notch 在 left/right (取决于 orientation),
+    // 必须用 MediaQuery.padding.left/right 偏移,否则视频名称/按钮被裁掉
+    final mediaPadding = MediaQuery.of(context).padding;
     return DecoratedBox(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
@@ -1981,11 +2000,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         ),
       ),
       child: Padding(
-        // 加上状态栏高度 (iOS 44pt / Android 24dp) 避免被 notch/胶囊遮挡
         padding: EdgeInsets.only(
-          top: 11 + MediaQuery.of(context).padding.top,
-          left: 4,
-          right: 4,
+          top: 11 + mediaPadding.top,
+          left: 4 + mediaPadding.left,
+          right: 4 + mediaPadding.right,
         ),
         child: child,
       ),
@@ -1993,6 +2011,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   }
 
   Widget _gradientBottomContainer({required Widget child}) {
+    // iPhone 横屏: 底部 home indicator 用 padding.bottom 偏移
+    // 两侧 notch 用 padding.left/right 偏移
+    final mediaPadding = MediaQuery.of(context).padding;
     return DecoratedBox(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
@@ -2002,9 +2023,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         ),
       ),
       child: Padding(
-        // 加上底部安全区 (iPhone home indicator / 三键导航),避免被遮挡
         padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).padding.bottom,
+          bottom: mediaPadding.bottom,
+          left: mediaPadding.left,
+          right: mediaPadding.right,
         ),
         child: child,
       ),
