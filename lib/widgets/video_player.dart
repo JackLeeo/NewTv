@@ -531,50 +531,57 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// 续播 seek：等播放器就绪（duration > 0）后 seek 到历史位置
   /// 必须在 _player.open() 之后调用，否则 seek 会因播放器未就绪而失败
   ///
-  /// **防重入（generation 计数器）**：每次调用 `_scheduleResumeSeek` 都将
-  /// `_resumeSeekGeneration` +1 并捕获到闭包 `myGen` 中。listener 触发时
-  /// 如果 `_resumeSeekGeneration != myGen`（说明期间被新调用覆盖了）就 skip。
-  /// 这保证：initState（外部 player 路径）+ didUpdateWidget（url 变化）+
-  /// _openMedia（自身 player 路径）三个入口**任意组合**多次调用，
-  /// 最终只 seek 一次最新的续播位置。
+  /// **双重保险（立即 seek + 轮询兜底）**：
+  /// 1. 立即调一次 `_player.seek(resume)` —— libmpv 在 native 端会缓存 seek
+  ///    命令，等 player loaded 后应用，保证"先从 0 播几秒再回退"不会发生
+  ///    （media_kit 的 Player.open 默认 autoplay=playing，player 加载完
+  ///    立即从 0 开始播放；只靠轮询会在 current>0 后才 seek，造成回退）
+  /// 2. 用 `_player.state.duration` 同步轮询（state 是 native event 触发的
+  ///    同步状态，initState 时立即可读；stream.duration 是 broadcast stream
+  ///    不 replay 历史，不能用），200ms 一次直到 > 0，检测到后再次 seek
+  ///    兜底（防止 immediate seek 被 libmpv 丢弃）
   ///
-  /// **轮询而非 stream 监听**：media_kit 的 `Player.stream.duration` 是
-  /// broadcast stream，**不 replay 历史**。如果 `_player.open()` 早于
-  /// `initState` 几百毫秒执行（detail view 路径：build 期间 _ensurePlayer
-  /// 同步调 `_player.open()`），stream 加载完成时的 emit 已经过去，
-  /// firstWhere 永远等不到下一个 emit → 8 秒超时后才 seek → 期间视频
-  /// 已经从 0 播放了 8 秒，seek 到 progress 表现为"回退"。改用
-  /// `_player.state.duration` 同步轮询（state 是同步状态，native event
-  /// 到达时立即更新），200ms 一次直到 > 0。
+  /// **防重入（generation 计数器）**：每次调用 `_scheduleResumeSeek` 都将
+  /// `_resumeSeekGeneration` +1 并捕获到闭包 `myGen` 中。轮询回调触发时
+  /// 如果 `_resumeSeekGeneration != myGen`（被新调用覆盖了）就 skip。
   void _scheduleResumeSeek() {
     final resume = widget.resumeSeconds;
     if (resume == null || resume <= 0) return;
     final myGen = ++_resumeSeekGeneration;
+
+    // 1) 立即 seek：让 libmpv 在 player ready 后从 progress 位置开始解码，
+    // 避免"先从 0 播几秒再回退"的现象
+    try {
+      _player.seek(Duration(seconds: resume.toInt()));
+      debugPrint('=== _scheduleResumeSeek: 立即 seek 到 ${resume}s ===');
+    } catch (e) {
+      debugPrint('=== _scheduleResumeSeek: 立即 seek 失败: $e ===');
+    }
+
+    // 2) 轮询 state.duration：loaded 后再次 seek 兜底
     _pollDurationAndSeek(resume, myGen, attempt: 0);
   }
 
-  /// 轮询检查 _player.state.duration，> 0 时立即 seek
+  /// 轮询检查 _player.state.duration，> 0 时再次 seek 兜底
   void _pollDurationAndSeek(double resume, int myGen, {required int attempt}) {
     if (myGen != _resumeSeekGeneration) return;
     if (!mounted) return;
-    if (attempt > 30) {
-      // 兜底：6 秒还没就绪，放弃续播
-      debugPrint('=== _scheduleResumeSeek: 6 秒未就绪，放弃续播 ===');
+    if (attempt > 60) {
+      debugPrint('=== _scheduleResumeSeek: 12 秒未就绪，放弃兜底 seek ===');
       return;
     }
     try {
       final dur = _player.state.duration;
       if (dur.inMilliseconds > 0) {
-        // 播放器就绪，用一个微延迟让 position stream 先被外部 listen 起来，
-        // 避免首次 seek 丢事件
+        // 播放器就绪，再次 seek 兜底（防 immediate seek 被 libmpv 丢弃）
         Future<void>.delayed(const Duration(milliseconds: 50), () {
           if (myGen != _resumeSeekGeneration) return;
           if (!mounted) return;
           try {
             _player.seek(Duration(seconds: resume.toInt()));
-            debugPrint('=== _scheduleResumeSeek: seek 到 ${resume}s ===');
+            debugPrint('=== _scheduleResumeSeek: 兜底 seek 到 ${resume}s ===');
           } catch (e) {
-            debugPrint('=== _scheduleResumeSeek: seek 失败: $e ===');
+            debugPrint('=== _scheduleResumeSeek: 兜底 seek 失败: $e ===');
           }
         });
         return;
