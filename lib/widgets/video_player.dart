@@ -350,7 +350,20 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       // 已经调过 `_player.open(Media(url, httpHeaders: headers, start: ...))`，
       // libmpv 会直接从续播位置开始解码。这里 _scheduleResumeSeek 只作
       // safety net：如果 Media.start 失效，state.playing listener 会兜底 seek
-      _scheduleResumeSeek();
+      //
+      // **关键**：仅在 _persisted.resumeApplied == false 时才触发续播。
+      // 切换全屏/退出全屏时外层 SingleChildScrollView+Column 树结构变化
+      // 会重建 VideoPlayerWidget 的 Element, initState 重跑, 此时 player
+      // 还在播 (例如 5min) 而 widget.resumeSeconds 是陈旧的 history 值
+      // (例如 30s), 触发续播会把 player seek 回 30s. 用持久化标志位
+      // 区分"首次 init"和"widget 重建", 重建时直接跳过.
+      if (_persisted.resumeApplied) {
+        debugPrint('=== initState: 续播已应用 (widget 重建), 跳过 ===');
+        _pendingResumeSeconds = null; // 防御清空, 防止 listener 误触发
+      } else {
+        _persisted.resumeApplied = true; // 先标记, 防重建 race 重复触发
+        _scheduleResumeSeek();
+      }
     }
     _scheduleHideControls();
     _startBitrateTimer();
@@ -520,6 +533,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           _player.setRate(_playbackSpeed);
         } catch (_) {}
       }
+      // url 变化 = 新 media 加载, 重置 resumeApplied 让 initState / _openMedia
+      // 重新触发续播 (新 episode 的 resumeSeconds 是 0 或新一集的续播位置)
+      _persisted.resumeApplied = false;
       if (_ownsPlayer) {
         _openMedia();
       } else {
@@ -527,6 +543,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         // _buildPlayerWidget → _ensurePlayer 已经在 widget rebuild 之前
         // 用 `Media(..., start: ...)` 让 libmpv 从续播位置直接解码
         // 这里 _scheduleResumeSeek 只作 safety net
+        _persisted.resumeApplied = true;
         _scheduleResumeSeek();
       }
     } else if ((oldWidget.resumeSeconds ?? -1) !=
@@ -545,6 +562,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     final start = (widget.resumeSeconds != null && widget.resumeSeconds! > 0)
         ? Duration(seconds: widget.resumeSeconds!.toInt())
         : null;
+    // 新 media 加载: 重置 resumeApplied 让本次 _scheduleResumeSeek 真正生效
+    _persisted.resumeApplied = true;
     _player.open(Media(widget.url, httpHeaders: headers, start: start));
     // safety net: state.playing listener 会兜底 seek
     _scheduleResumeSeek();
@@ -564,6 +583,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// 4. 否则等 `_player.stream.playing` listener 在 initState 注册的回调
   ///    触发时调 `_applyPendingResumeSeek` 应用兜底
   ///
+  /// **防御性跳过**（关键）：进入本方法时检查 `_player.state.position`，
+  /// 如果**已经超过** target（用户已经看了视频），说明这不是"刚加载需要续播"
+  /// 场景，而是 widget 被重建（典型例子：切换全屏/退出全屏时外层
+  /// SingleChildScrollView+Column 树结构变化，触发 VideoPlayerWidget
+  /// Element 重建，initState 再次跑 `_scheduleResumeSeek`）。此时**绝不能**
+  /// 用陈旧的 `widget.resumeSeconds` (从 history 加载的旧值) 把用户当前
+  /// 看到的位置 (例如 5 分钟) seek 回原续播位置 (30s)。
+  ///
   /// 对比旧实现（轮询 state.duration）：旧实现的问题是 state.duration
   /// 在 player 处于 opening/buffering 时就已 > 0，但此时 autoplay 已经
   /// 从 0 播了几帧，导致"先从 0 播几秒再回退"的现象。新的 state.playing
@@ -571,12 +598,26 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   void _scheduleResumeSeek() {
     final resume = widget.resumeSeconds;
     if (resume == null || resume <= 0) return;
+    final target = Duration(seconds: resume.toInt());
+
+    // 防御：如果 player 已经在 target 之后 (用户已观看), 跳过 seek
+    // 覆盖"widget 重建"场景 (切换全屏/退出全屏触发 Element 重建)
+    try {
+      final cur = _player.state.position;
+      if (cur > target) {
+        debugPrint(
+            '=== _scheduleResumeSeek: cur=$cur > target=$target, 用户已观看, 跳过 ===');
+        _pendingResumeSeconds = null;
+        return;
+      }
+    } catch (_) {}
+
     // 缓存到 _pendingResumeSeconds 供 state.playing listener 兜底
     _pendingResumeSeconds = resume;
 
     // 1) 立即 seek：best effort，player 还没 loaded 时 seek 命令可能被 libmpv 丢弃
     try {
-      _player.seek(Duration(seconds: resume.toInt()));
+      _player.seek(target);
       debugPrint('=== _scheduleResumeSeek: 立即 seek 到 ${resume}s ===');
     } catch (e) {
       debugPrint('=== _scheduleResumeSeek: 立即 seek 失败: $e ===');
@@ -595,15 +636,22 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   ///   guard let pendingSeekSeconds, pendingSeekSeconds > 0 else { return }
   ///   seek(to: pendingSeekSeconds)
   ///   self.pendingSeekSeconds = nil
+  ///
+  /// **防御性跳过**：与 `_scheduleResumeSeek` 同样的检查，
+  /// 如果 player 已经超过 target 则不再 seek 回去。
   void _applyPendingResumeSeek() {
     final pending = _pendingResumeSeconds;
     if (pending == null || pending <= 0) return;
-    // 防御：如果当前 position 已经离目标很近（< 2s），说明 Media.start 已生效，
-    // 不再重复 seek（避免 setState 多次触发导致 UI 闪烁）
+    final target = Duration(seconds: pending.toInt());
     try {
       final cur = _player.state.position;
-      if ((cur - Duration(seconds: pending.toInt())).abs() <
-          const Duration(seconds: 2)) {
+      if (cur > target) {
+        debugPrint(
+            '=== _applyPendingResumeSeek: cur=$cur > target=$target, 用户已观看, 跳过 ===');
+        _pendingResumeSeconds = null;
+        return;
+      }
+      if ((cur - target).abs() < const Duration(seconds: 2)) {
         debugPrint('=== _applyPendingResumeSeek: 已在 $pending 附近, 跳过 ===');
         _pendingResumeSeconds = null;
         return;
@@ -611,7 +659,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     } catch (_) {}
     _pendingResumeSeconds = null;
     try {
-      _player.seek(Duration(seconds: pending.toInt()));
+      _player.seek(target);
       debugPrint('=== _applyPendingResumeSeek: 兜底 seek 到 ${pending}s ===');
     } catch (e) {
       debugPrint('=== _applyPendingResumeSeek: 兜底 seek 失败: $e ===');
@@ -2537,6 +2585,12 @@ class _GestureHintBubble extends StatelessWidget {
 class _PersistedPlayerState {
   bool isNativeFullscreen = false;
   bool isImmersive = false;
+  /// 续播是否已应用：跨 widget Element 重建持久化。
+  /// - false: 首次 init 或 url 变化后 init, 触发续播
+  /// - true: widget 已被重建 (典型场景: 切换全屏/退出全屏), 不再触发续播
+  /// 防止切换全屏时 Element 重建跑 initState 误用陈旧 widget.resumeSeconds
+  /// 把 player 从当前位置 (例如 5min) seek 回原续播位置 (例如 30s)
+  bool resumeApplied = false;
 }
 
 class _SettingsRowLabel extends StatelessWidget {
