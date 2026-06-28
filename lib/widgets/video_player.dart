@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -208,6 +209,21 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   Timer? _bitrateTimer;
   Timer? _indicatorTimer;
 
+  // ============================================================
+  // 全屏状态栏 - 电量 + 时间
+  // ============================================================
+
+  /// 电池电量 (0-100) ;  -1 表示未知 (iOS 模拟器 / 平台不支持)
+  int _batteryLevel = -1;
+  BatteryState _batteryState = BatteryState.unknown;
+  StreamSubscription<BatteryState>? _batteryStateSub;
+
+  /// 顶部状态栏显示的当前时间 (HH:mm) ;  每分钟刷新
+  String _currentTime = '';
+  Timer? _timeTimer;
+
+  // ============================================================
+
   @override
   void initState() {
     super.initState();
@@ -222,6 +238,19 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     // 从缓存读回上次的全屏状态（如果上次处于全屏，用户切走再回来要保持）
     _isNativeFullscreen = _persisted.isNativeFullscreen;
     _isImmersive = _persisted.isImmersive;
+
+    // 启动时间定时器 (每分钟整点更新,用于全屏状态栏显示)
+    _currentTime = _formatTimeNow();
+    _timeTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!mounted) return;
+      final t = _formatTimeNow();
+      if (t != _currentTime) {
+        setState(() => _currentTime = t);
+      }
+    });
+
+    // 启动电池监听 (iOS / Android / 桌面端都支持, 失败时静默忽略)
+    _initBatteryMonitor();
 
     if (widget.player != null) {
       _player = widget.player!;
@@ -341,6 +370,97 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     }
   }
 
+  // ============================================================
+  // 电池 + 时间 (全屏状态栏)
+  // ============================================================
+
+  String _formatTimeNow() {
+    final now = DateTime.now();
+    final h = now.hour.toString().padLeft(2, '0');
+    final m = now.minute.toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+
+  Future<void> _initBatteryMonitor() async {
+    try {
+      final battery = Battery();
+      // 初始电量
+      try {
+        final lvl = await battery.batteryLevel;
+        if (!mounted) return;
+        setState(() => _batteryLevel = lvl);
+      } catch (_) {}
+      // 监听充电状态变化 (电量由 stream triggered 时再读一次)
+      _batteryStateSub = battery.onBatteryStateChanged.listen((state) async {
+        if (!mounted) return;
+        setState(() => _batteryState = state);
+        try {
+          final lvl = await battery.batteryLevel;
+          if (!mounted) return;
+          setState(() => _batteryLevel = lvl);
+        } catch (_) {}
+      });
+    } catch (e) {
+      // 平台不支持 / 权限被拒 — 静默忽略,状态栏只显示时间
+      debugPrint('=== _initBatteryMonitor: 失败: $e ===');
+    }
+  }
+
+  /// 全屏状态栏 - 顶部右侧: 时间 + 电池图标
+  Widget _buildStatusBarInfo() {
+    final stateName = switch (_batteryState) {
+      BatteryState.charging => 'charging',
+      BatteryState.discharging => '',
+      BatteryState.full => 'full',
+      BatteryState.connectedNotCharging => 'plugged',
+      BatteryState.unknown => '',
+    };
+    final level = _batteryLevel < 0 ? '--' : '$_batteryLevel%';
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // 时间
+        Text(
+          _currentTime,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            shadows: [Shadow(blurRadius: 4, color: Colors.black87)],
+          ),
+        ),
+        const SizedBox(width: 10),
+        // 电池图标
+        Icon(
+          stateName == 'charging'
+              ? Icons.battery_charging_full
+              : _batteryLevel > 80
+                  ? Icons.battery_full
+                  : _batteryLevel > 50
+                      ? Icons.battery_5_bar
+                      : _batteryLevel > 20
+                          ? Icons.battery_3_bar
+                          : Icons.battery_1_bar,
+          color: Colors.white,
+          size: 16,
+          shadows: const [
+            Shadow(blurRadius: 4, color: Colors.black87),
+          ],
+        ),
+        const SizedBox(width: 2),
+        Text(
+          level,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11,
+            fontWeight: FontWeight.w500,
+            shadows: [Shadow(blurRadius: 4, color: Colors.black87)],
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   void didUpdateWidget(VideoPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -448,13 +568,19 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   ///   setState `_isNativeFullscreen`，避免与 `onFullScreenChanged` 触发的
   ///   Obx rebuild 时序竞态（导致"icon 不切换"或"需要点两次"）。
   Future<void> _onUserToggleFullscreen() async {
-    debugPrint('=== _onUserToggleFullscreen: _isNativeFullscreen=$_isNativeFullscreen ===');
+    // 用真实状态决策,而非陈旧的 _isNativeFullscreen
+    // (避免用户用 Esc / 系统级操作退出全屏后,icon 状态未同步导致必须点两次)
+    final currentlyFull =
+        WindowFullScreen.instance.isActive || _isImmersive;
+    debugPrint('=== _onUserToggleFullscreen: currentlyFull=$currentlyFull '
+        'isActive=${WindowFullScreen.instance.isActive} '
+        '_isImmersive=$_isImmersive ===');
     // 互斥：先退出 PiP
     if (VideoPlayerPip.instance.isActive) {
       await VideoPlayerPip.instance.exit();
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
-    if (_isNativeFullscreen) {
+    if (currentlyFull) {
       await _exitFullScreen();
     } else {
       await _enterFullScreen();
@@ -530,7 +656,11 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   ///
   /// **iOS 端**：恢复允许竖屏 + 横屏。
   Future<void> _exitFullScreen() async {
-    if (!_isNativeFullscreen) return;
+    // 用真实状态判断,避免重复退出 (no-op 时让 _onWindowFullScreenChanged 同步状态)
+    if (!WindowFullScreen.instance.isActive && !_isImmersive) {
+      debugPrint('=== _exitFullScreen: skip (不在全屏) ===');
+      return;
+    }
     debugPrint('=== _exitFullScreen: start ===');
     // 通知 detail view 切回正常模式
     widget.onFullScreenChanged?.call(false);
@@ -668,6 +798,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     _hideTimer?.cancel();
     _bitrateTimer?.cancel();
     _indicatorTimer?.cancel();
+    // 全屏状态栏 (时间 + 电池)
+    _timeTimer?.cancel();
+    _batteryStateSub?.cancel();
     if (_ownsPlayer) {
       _player.dispose();
     }
@@ -1020,6 +1153,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                 _toggleCast();
               },
             ),
+
+            // 全屏状态栏: 时间 + 电池 (右侧,与控制按钮分隔,信息醒目)
+            // 只在 native fullscreen 模式下显示,沉浸式给视频更多空间
+            if (_isNativeFullscreen) ...[
+              const SizedBox(width: 4),
+              _buildStatusBarInfo(),
+            ],
 
             // 设置
             _iconButton(
@@ -1841,7 +1981,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         ),
       ),
       child: Padding(
-        padding: const EdgeInsets.only(top: 11, left: 4, right: 4),
+        // 加上状态栏高度 (iOS 44pt / Android 24dp) 避免被 notch/胶囊遮挡
+        padding: EdgeInsets.only(
+          top: 11 + MediaQuery.of(context).padding.top,
+          left: 4,
+          right: 4,
+        ),
         child: child,
       ),
     );
@@ -1856,7 +2001,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           colors: [Colors.transparent, Colors.black87],
         ),
       ),
-      child: child,
+      child: Padding(
+        // 加上底部安全区 (iPhone home indicator / 三键导航),避免被遮挡
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).padding.bottom,
+        ),
+        child: child,
+      ),
     );
   }
 

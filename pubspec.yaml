@@ -26,6 +26,10 @@ dependencies:
   shared_preferences: ^2.3.4
   crypto: ^3.0.6
   archive: ^3.6.1
+  # 全屏状态栏显示电量（battery_plus 跨平台支持 iOS/Android/Windows/macOS/Linux）
+  battery_plus: ^6.2.1
+  # 自定义背景上传 - 从相册选择图片 (image_picker)
+  image_picker: ^1.1.2
   # 投屏（DLNA/UPnP 设备发现 + 视频推送）
   # 参考 PiliPlus-main/lib/pages/dlna/view.dart 接入方式
   # iOS 端需要 NSLocalNetworkUsageDescription + NSBonjourServices = [_ssdp._udp]

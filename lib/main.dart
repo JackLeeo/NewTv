@@ -8,6 +8,7 @@ import 'app.dart';
 import 'models/cache_store.dart';
 import 'services/api_config.dart';
 import 'services/app_state.dart';
+import 'services/background_service.dart';
 import 'pages/search/controller.dart';
 
 void main() async {
@@ -25,6 +26,14 @@ void main() async {
 
   // 注册 AppState 为 GetxController - 对应 Swift @StateObject private var appState = AppState()
   Get.put<AppState>(AppState());
+
+  // 注册 BackgroundService 为永久实例 - 负责全应用背景渐变/自定义图片
+  // 必须在 runApp 之前 await onInit() 完成,确保首帧就用已保存的背景
+  await Get.putAsync<BackgroundService>(() async {
+    final svc = BackgroundService();
+    svc.onInit(); // sync 触发 _loadFromPrefs,后台异步读 SharedPreferences
+    return svc;
+  }, permanent: true);
 
   // 注册 TvSearchController 为永久实例 - 避免在 SearchPage 中 Get.put 创建新实例替换
   Get.put<TvSearchController>(TvSearchController(), permanent: true);

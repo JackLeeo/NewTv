@@ -16,8 +16,10 @@ class HistoryPage extends StatelessWidget {
     final controller = Get.put(HistoryController());
 
     return Scaffold(
+      // 透明背景,让 ContentView 全局背景层透出
+      backgroundColor: Colors.transparent,
       body: Container(
-        color: AppTheme.backgroundPrimary,
+        color: Colors.transparent,
         child: SafeArea(
           child: Column(
             children: [

@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'common/theme.dart';
 import 'common/constants.dart';
 import 'services/app_state.dart';
+import 'services/background_service.dart';
 import 'services/nodejs_manager.dart';
 import 'pages/home/view.dart';
 import 'pages/live/view.dart';
@@ -761,6 +762,12 @@ class _ContentViewState extends State<ContentView>
     return Scaffold(
       body: Stack(
         children: [
+          // 全局背景层 - 对应 TV-release CustomWallView
+          // 4 个内置渐变 + 用户上传自定义图片, 通过 BackgroundService 切换
+          // 5 个 tab 页背景透明 (后述) 让其透出
+          Positioned.fill(
+            child: BackgroundService.instance.buildBackground(overlayAlpha: 0.3),
+          ),
           IndexedStack(
             index: _selectedTab,
             children: _tabPages,

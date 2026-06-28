@@ -40,36 +40,29 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      // 透明背景,让 app.dart ContentView 里的 BackgroundService 全局背景层透出
+      backgroundColor: Colors.transparent,
       body: Stack(
         children: [
-          Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF0F0F0F), Color(0xFF141414), Color(0xFF0F0F0F)],
-              ),
-            ),
-            child: SafeArea(
-              child: Column(
-                children: [
-                  _buildHeaderBar(),
-                  _buildSearchBar(),
-                  Obx(() {
-                    if (_controller.sorts.isNotEmpty) {
-                      return _buildCategoryTabBar();
-                    }
-                    return const SizedBox.shrink();
-                  }),
-                  Obx(() {
-                    if (_controller.currentFilters.isNotEmpty) {
-                      return _buildFilterBar();
-                    }
-                    return const SizedBox.shrink();
-                  }),
-                  Expanded(child: _buildContentArea()),
-                ],
-              ),
+          SafeArea(
+            child: Column(
+              children: [
+                _buildHeaderBar(),
+                _buildSearchBar(),
+                Obx(() {
+                  if (_controller.sorts.isNotEmpty) {
+                    return _buildCategoryTabBar();
+                  }
+                  return const SizedBox.shrink();
+                }),
+                Obx(() {
+                  if (_controller.currentFilters.isNotEmpty) {
+                    return _buildFilterBar();
+                  }
+                  return const SizedBox.shrink();
+                }),
+                Expanded(child: _buildContentArea()),
+              ],
             ),
           ),
           // 重连覆盖层
