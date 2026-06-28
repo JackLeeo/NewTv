@@ -103,7 +103,19 @@ class _DetailPageState extends State<DetailPage> {
 
   /// 确保 player 已创建并打开当前 url
   /// 同一 url+headers 不重复创建
-  void _ensurePlayer(String url, Map<String, String> headers) {
+  ///
+  /// **startPosition 续播**：传 `Duration` 给 `Media.start` 参数，
+  /// 让 libmpv 在 player open 时**直接**从续播位置开始解码，
+  /// 避免 "先从 0 播几秒再回退" 的现象。对应 Swift 的
+  /// `mediaPlayerStateChanged → state=.playing → applyPendingSeekIfNeeded`
+  /// 模式，但 libmpv 端做更彻底 (根本不会经过 0 位置)。
+  /// - 传 null / 0 → 从 0 开始（冷启动 / 切换集数）
+  /// - 传 > 0 → 从该秒数开始（续播）
+  void _ensurePlayer(
+    String url,
+    Map<String, String> headers, {
+    double? startPosition,
+  }) {
     final headersKey = headers.entries
         .map((e) => '${e.key}=${e.value}')
         .join('&');
@@ -118,7 +130,10 @@ class _DetailPageState extends State<DetailPage> {
     _videoController = VideoController(_player!);
     _lastPlayerUrl = url;
     _lastPlayerHeadersKey = headersKey;
-    _player!.open(Media(url, httpHeaders: headers));
+    final start = (startPosition != null && startPosition > 0)
+        ? Duration(seconds: startPosition.toInt())
+        : null;
+    _player!.open(Media(url, httpHeaders: headers, start: start));
   }
 
   @override
@@ -261,7 +276,9 @@ class _DetailPageState extends State<DetailPage> {
     final headers = _controller.playHeaders.isNotEmpty
         ? Map<String, String>.from(_controller.playHeaders)
         : const <String, String>{};
-    _ensurePlayer(url, headers);
+    // 把续播位置透传给 _ensurePlayer, 让 libmpv 通过 Media.start 参数
+    // 直接从续播位置开始解码, 避免 "先从 0 播几秒再回退" 的现象
+    _ensurePlayer(url, headers, startPosition: _controller.resumeSeconds.value);
 
     final info = _controller.vodInfo.value;
     final episode = info?.currentEpisode;

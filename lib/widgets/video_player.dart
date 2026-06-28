@@ -187,11 +187,18 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// 上滑锁定倍速的垂直位移阈值（手指向上滑过这么多像素视为锁定）
   static const double _longPressLockUpwardThreshold = 80.0;
 
-  /// 续播 seek 任务 generation 计数器：每次 _scheduleResumeSeek 调用都 +1，
-  /// 轮询回调触发时检查是否被新调用"覆盖"（generation 不一致则 skip），
-  /// 保证多次调用 _scheduleResumeSeek（initState + didUpdateWidget +
-  /// _openMedia 三个入口都可能触发）只最终 seek 一次。
-  int _resumeSeekGeneration = 0;
+  /// 续播目标位置缓存：与 Swift 的 `pendingSeekSeconds` 字段等价。
+  /// 模式：
+  ///   - initState / didUpdateWidget / _openMedia 三个入口都会调
+  ///     `_scheduleResumeSeek` 把 widget.resumeSeconds 写入 _pendingResumeSeconds
+  ///   - detail view 的 `_ensurePlayer` 已经在 widget build 之前用
+  ///     `Media(..., start: Duration(seconds: resume))` 让 libmpv
+  ///     从续播位置开始解码（**这是 libmpv 层的根本性修复**，根本
+  ///     不会经过 0 位置）
+  ///   - state.playing listener 在 player 真正开始播放时再 seek 一次
+  ///     兜底（防 libmpv 忽略 Media.start 参数的边缘情况）
+  ///   - apply 后清空
+  double? _pendingResumeSeconds;
 
   /// 用于强制重建 Video widget，绕过 ANGLE surface 失效导致的黑屏
   int _videoRebuildKey = 0;
@@ -306,7 +313,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           _isPlaying = playing;
           _isBuffering = false;
         });
-        if (playing) widget.onPlaying?.call();
+        if (playing) {
+          widget.onPlaying?.call();
+          // 续播兜底：player 进入 playing 状态时, 如果 _pendingResumeSeconds
+          // 还有值, 说明 Media.start 没生效或被 libmpv 丢弃, 再次 seek 一次
+          // 对应 Swift `handlePlayingState → applyPendingSeekIfNeeded` 模式
+          _applyPendingResumeSeek();
+        }
       }
     });
 
@@ -334,7 +347,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       _openMedia();
     } else {
       // 外部注入 player（detail view 的常规路径）：build 期间 _ensurePlayer
-      // 已经调过 _player.open(Media(url))，这里只等播放器就绪后 seek
+      // 已经调过 `_player.open(Media(url, httpHeaders: headers, start: ...))`，
+      // libmpv 会直接从续播位置开始解码。这里 _scheduleResumeSeek 只作
+      // safety net：如果 Media.start 失效，state.playing listener 会兜底 seek
       _scheduleResumeSeek();
     }
     _scheduleHideControls();
@@ -508,8 +523,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       if (_ownsPlayer) {
         _openMedia();
       } else {
-        // 外部注入 player（detail view 的常规路径），由 detail view 负责
-        // _player.open(Media(...))，这里只等播放器就绪后 seek 到历史位置
+        // 外部注入 player（detail view 的常规路径）：detail view 的
+        // _buildPlayerWidget → _ensurePlayer 已经在 widget rebuild 之前
+        // 用 `Media(..., start: ...)` 让 libmpv 从续播位置直接解码
+        // 这里 _scheduleResumeSeek 只作 safety net
         _scheduleResumeSeek();
       }
     } else if ((oldWidget.resumeSeconds ?? -1) !=
@@ -523,34 +540,41 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   void _openMedia() {
     final headers = widget.headers ?? {};
-    _player.open(Media(widget.url, httpHeaders: headers));
-    // 续播：等播放器就绪（duration 第一次有效）后 seek 到历史位置
+    // 续播：传 start 给 Media 让 libmpv 从续播位置开始解码，
+    // 根本避免"先从 0 播几秒再回退"的问题
+    final start = (widget.resumeSeconds != null && widget.resumeSeconds! > 0)
+        ? Duration(seconds: widget.resumeSeconds!.toInt())
+        : null;
+    _player.open(Media(widget.url, httpHeaders: headers, start: start));
+    // safety net: state.playing listener 会兜底 seek
     _scheduleResumeSeek();
   }
 
-  /// 续播 seek：等播放器就绪（duration > 0）后 seek 到历史位置
-  /// 必须在 _player.open() 之后调用，否则 seek 会因播放器未就绪而失败
+  /// 续播 seek（safety net 模式，对应 Swift `applyPendingSeekIfNeeded`）
   ///
-  /// **双重保险（立即 seek + 轮询兜底）**：
-  /// 1. 立即调一次 `_player.seek(resume)` —— libmpv 在 native 端会缓存 seek
-  ///    命令，等 player loaded 后应用，保证"先从 0 播几秒再回退"不会发生
-  ///    （media_kit 的 Player.open 默认 autoplay=playing，player 加载完
-  ///    立即从 0 开始播放；只靠轮询会在 current>0 后才 seek，造成回退）
-  /// 2. 用 `_player.state.duration` 同步轮询（state 是 native event 触发的
-  ///    同步状态，initState 时立即可读；stream.duration 是 broadcast stream
-  ///    不 replay 历史，不能用），200ms 一次直到 > 0，检测到后再次 seek
-  ///    兜底（防止 immediate seek 被 libmpv 丢弃）
+  /// **核心修复**：detail view 的 `_ensurePlayer` 在 widget build 之前
+  /// 已经用 `Media(..., start: Duration(seconds: resume))` 让 libmpv
+  /// 从续播位置开始解码（这是 libmpv 层的根本性修复，根本不会经过 0 位置）。
+  /// 本方法只作 safety net，覆盖 Media.start 失效的边缘情况：
   ///
-  /// **防重入（generation 计数器）**：每次调用 `_scheduleResumeSeek` 都将
-  /// `_resumeSeekGeneration` +1 并捕获到闭包 `myGen` 中。轮询回调触发时
-  /// 如果 `_resumeSeekGeneration != myGen`（被新调用覆盖了）就 skip。
+  /// 1. 缓存 `_pendingResumeSeconds` 字段
+  /// 2. 立即 seek 一次（best effort，player 还没 loaded 时可能丢）
+  /// 3. 如果 `_player.state.playing` 已经是 true（player 已 loaded 并在播），
+  ///    立即调 `_applyPendingResumeSeek` 应用兜底
+  /// 4. 否则等 `_player.stream.playing` listener 在 initState 注册的回调
+  ///    触发时调 `_applyPendingResumeSeek` 应用兜底
+  ///
+  /// 对比旧实现（轮询 state.duration）：旧实现的问题是 state.duration
+  /// 在 player 处于 opening/buffering 时就已 > 0，但此时 autoplay 已经
+  /// 从 0 播了几帧，导致"先从 0 播几秒再回退"的现象。新的 state.playing
+  /// 检测在 player 真正开始播放时触发，配合 Media.start 根本避免该问题。
   void _scheduleResumeSeek() {
     final resume = widget.resumeSeconds;
     if (resume == null || resume <= 0) return;
-    final myGen = ++_resumeSeekGeneration;
+    // 缓存到 _pendingResumeSeconds 供 state.playing listener 兜底
+    _pendingResumeSeconds = resume;
 
-    // 1) 立即 seek：让 libmpv 在 player ready 后从 progress 位置开始解码，
-    // 避免"先从 0 播几秒再回退"的现象
+    // 1) 立即 seek：best effort，player 还没 loaded 时 seek 命令可能被 libmpv 丢弃
     try {
       _player.seek(Duration(seconds: resume.toInt()));
       debugPrint('=== _scheduleResumeSeek: 立即 seek 到 ${resume}s ===');
@@ -558,41 +582,40 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       debugPrint('=== _scheduleResumeSeek: 立即 seek 失败: $e ===');
     }
 
-    // 2) 轮询 state.duration：loaded 后再次 seek 兜底
-    _pollDurationAndSeek(resume, myGen, attempt: 0);
+    // 2) 如果 player 已经在 playing（罕见 edge case：initState 时 player
+    //    已经 loaded 完成），立即应用兜底
+    if (_player.state.playing) {
+      _applyPendingResumeSeek();
+    }
+    // 否则等 state.playing stream listener 触发时应用（见 initState）
   }
 
-  /// 轮询检查 _player.state.duration，> 0 时再次 seek 兜底
-  void _pollDurationAndSeek(double resume, int myGen, {required int attempt}) {
-    if (myGen != _resumeSeekGeneration) return;
-    if (!mounted) return;
-    if (attempt > 60) {
-      debugPrint('=== _scheduleResumeSeek: 12 秒未就绪，放弃兜底 seek ===');
-      return;
-    }
+  /// 应用缓存的续播位置（state.playing 兜底），并清空缓存
+  /// 对应 Swift `applyPendingSeekIfNeeded`：
+  ///   guard let pendingSeekSeconds, pendingSeekSeconds > 0 else { return }
+  ///   seek(to: pendingSeekSeconds)
+  ///   self.pendingSeekSeconds = nil
+  void _applyPendingResumeSeek() {
+    final pending = _pendingResumeSeconds;
+    if (pending == null || pending <= 0) return;
+    // 防御：如果当前 position 已经离目标很近（< 2s），说明 Media.start 已生效，
+    // 不再重复 seek（避免 setState 多次触发导致 UI 闪烁）
     try {
-      final dur = _player.state.duration;
-      if (dur.inMilliseconds > 0) {
-        // 播放器就绪，再次 seek 兜底（防 immediate seek 被 libmpv 丢弃）
-        Future<void>.delayed(const Duration(milliseconds: 50), () {
-          if (myGen != _resumeSeekGeneration) return;
-          if (!mounted) return;
-          try {
-            _player.seek(Duration(seconds: resume.toInt()));
-            debugPrint('=== _scheduleResumeSeek: 兜底 seek 到 ${resume}s ===');
-          } catch (e) {
-            debugPrint('=== _scheduleResumeSeek: 兜底 seek 失败: $e ===');
-          }
-        });
+      final cur = _player.state.position;
+      if ((cur - Duration(seconds: pending.toInt())).abs() <
+          const Duration(seconds: 2)) {
+        debugPrint('=== _applyPendingResumeSeek: 已在 $pending 附近, 跳过 ===');
+        _pendingResumeSeconds = null;
         return;
       }
+    } catch (_) {}
+    _pendingResumeSeconds = null;
+    try {
+      _player.seek(Duration(seconds: pending.toInt()));
+      debugPrint('=== _applyPendingResumeSeek: 兜底 seek 到 ${pending}s ===');
     } catch (e) {
-      debugPrint('=== _scheduleResumeSeek: 读 state.duration 失败: $e ===');
+      debugPrint('=== _applyPendingResumeSeek: 兜底 seek 失败: $e ===');
     }
-    // 200ms 后再检查
-    Future<void>.delayed(const Duration(milliseconds: 200), () {
-      _pollDurationAndSeek(resume, myGen, attempt: attempt + 1);
-    });
   }
 
   void _startBitrateTimer() {
