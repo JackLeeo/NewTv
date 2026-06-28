@@ -187,11 +187,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// 上滑锁定倍速的垂直位移阈值（手指向上滑过这么多像素视为锁定）
   static const double _longPressLockUpwardThreshold = 80.0;
 
-  /// 待 seek 的续播位置（秒）。每次 _openMedia 后清零，避免重复 seek。
-  double? _pendingResumeSeconds;
-
   /// 续播 seek 任务 generation 计数器：每次 _scheduleResumeSeek 调用都 +1，
-  /// listener 触发时检查是否被新调用"覆盖"（generation 不一致则 skip），
+  /// 轮询回调触发时检查是否被新调用"覆盖"（generation 不一致则 skip），
   /// 保证多次调用 _scheduleResumeSeek（initState + didUpdateWidget +
   /// _openMedia 三个入口都可能触发）只最终 seek 一次。
   int _resumeSeekGeneration = 0;
@@ -531,7 +528,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     _scheduleResumeSeek();
   }
 
-  /// 续播 seek：等播放器就绪（duration 第一次 > 0）后 seek 到历史位置
+  /// 续播 seek：等播放器就绪（duration > 0）后 seek 到历史位置
   /// 必须在 _player.open() 之后调用，否则 seek 会因播放器未就绪而失败
   ///
   /// **防重入（generation 计数器）**：每次调用 `_scheduleResumeSeek` 都将
@@ -540,39 +537,55 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   /// 这保证：initState（外部 player 路径）+ didUpdateWidget（url 变化）+
   /// _openMedia（自身 player 路径）三个入口**任意组合**多次调用，
   /// 最终只 seek 一次最新的续播位置。
+  ///
+  /// **轮询而非 stream 监听**：media_kit 的 `Player.stream.duration` 是
+  /// broadcast stream，**不 replay 历史**。如果 `_player.open()` 早于
+  /// `initState` 几百毫秒执行（detail view 路径：build 期间 _ensurePlayer
+  /// 同步调 `_player.open()`），stream 加载完成时的 emit 已经过去，
+  /// firstWhere 永远等不到下一个 emit → 8 秒超时后才 seek → 期间视频
+  /// 已经从 0 播放了 8 秒，seek 到 progress 表现为"回退"。改用
+  /// `_player.state.duration` 同步轮询（state 是同步状态，native event
+  /// 到达时立即更新），200ms 一次直到 > 0。
   void _scheduleResumeSeek() {
     final resume = widget.resumeSeconds;
-    if (resume == null || resume <= 0) {
-      _pendingResumeSeconds = null;
+    if (resume == null || resume <= 0) return;
+    final myGen = ++_resumeSeekGeneration;
+    _pollDurationAndSeek(resume, myGen, attempt: 0);
+  }
+
+  /// 轮询检查 _player.state.duration，> 0 时立即 seek
+  void _pollDurationAndSeek(double resume, int myGen, {required int attempt}) {
+    if (myGen != _resumeSeekGeneration) return;
+    if (!mounted) return;
+    if (attempt > 30) {
+      // 兜底：6 秒还没就绪，放弃续播
+      debugPrint('=== _scheduleResumeSeek: 6 秒未就绪，放弃续播 ===');
       return;
     }
-    _pendingResumeSeconds = resume;
-    final myGen = ++_resumeSeekGeneration;
-    // 用 firstWhere 等 duration 第一次有效，8 秒兜底超时
-    _player.stream.duration
-        .firstWhere((d) => d.inMilliseconds > 0)
-        .timeout(const Duration(seconds: 8), onTimeout: () => Duration.zero)
-        .then((_) {
-          if (!mounted) return;
-          // 期间被新的 _scheduleResumeSeek 调用覆盖了，跳过旧任务
+    try {
+      final dur = _player.state.duration;
+      if (dur.inMilliseconds > 0) {
+        // 播放器就绪，用一个微延迟让 position stream 先被外部 listen 起来，
+        // 避免首次 seek 丢事件
+        Future<void>.delayed(const Duration(milliseconds: 50), () {
           if (myGen != _resumeSeekGeneration) return;
-          final pending = _pendingResumeSeconds;
-          if (pending == null || pending <= 0) return;
-          _pendingResumeSeconds = null;
-          // 用一个微延迟让 position stream 先被外部 listen 起来，避免首次 seek 丢事件
-          Future<void>.delayed(const Duration(milliseconds: 100), () {
-            if (!mounted) return;
-            try {
-              _player.seek(Duration(seconds: pending.toInt()));
-              debugPrint('=== _scheduleResumeSeek: seek 到 ${pending}s ===');
-            } catch (e) {
-              debugPrint('=== _scheduleResumeSeek: seek 失败: $e ===');
-            }
-          });
-        })
-        .catchError((e) {
-          debugPrint('=== _scheduleResumeSeek: 等待 duration 失败: $e ===');
+          if (!mounted) return;
+          try {
+            _player.seek(Duration(seconds: resume.toInt()));
+            debugPrint('=== _scheduleResumeSeek: seek 到 ${resume}s ===');
+          } catch (e) {
+            debugPrint('=== _scheduleResumeSeek: seek 失败: $e ===');
+          }
         });
+        return;
+      }
+    } catch (e) {
+      debugPrint('=== _scheduleResumeSeek: 读 state.duration 失败: $e ===');
+    }
+    // 200ms 后再检查
+    Future<void>.delayed(const Duration(milliseconds: 200), () {
+      _pollDurationAndSeek(resume, myGen, attempt: attempt + 1);
+    });
   }
 
   void _startBitrateTimer() {
