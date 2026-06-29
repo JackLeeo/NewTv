@@ -10,6 +10,18 @@ class AppTheme {
   static const Color backgroundTertiary = Color(0x0FFFFFFF); // white 6%
   static const Color backgroundElevated = Color(0x14FFFFFF); // white 8%
 
+  // ===== 半透明卡片色 =====
+  // 专为主 tab 视图内的卡片/容器设计, 让 BackgroundService 全局背景层透出
+  // 替换原 backgroundSecondary (完全不透明) 造成的"黑色板块"问题
+  //
+  // backgroundCard: 80% 透明度的 #1A1A1A, 适合 AppCard / VodCard
+  // backgroundCardElevated: 90% 透明度, 适合高亮/选中状态容器
+  // backgroundNavBar: 80% 透明度的 #1C1C1E, 适合底部导航栏
+  // 0xCC = 204/255 ≈ 80%, 0xE6 = 230/255 ≈ 90%
+  static const Color backgroundCard = Color(0xCC1A1A1A);
+  static const Color backgroundCardElevated = Color(0xE61A1A1A);
+  static const Color backgroundNavBar = Color(0xCC1C1C1E);
+
   static const Color textPrimary = Color(0xEBEBEBEB); // white 92%
   static const Color textSecondary = Color(0x8CFFFFFF); // white 55%
   static const Color textTertiary = Color(0x59FFFFFF); // white 35%

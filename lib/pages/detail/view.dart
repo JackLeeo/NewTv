@@ -7,6 +7,7 @@ import '../../common/theme.dart';
 import '../../models/movie.dart';
 import '../../models/vod_info.dart';
 import '../../models/cache_store.dart';
+import '../../services/background_service.dart';
 import '../../widgets/common_widgets.dart';
 import '../../widgets/video_player.dart';
 import '../../widgets/video_player_pip.dart';
@@ -155,13 +156,29 @@ class _DetailPageState extends State<DetailPage> {
                       color: AppTheme.textPrimary, size: 28),
                   onPressed: () => Get.back(),
                 ),
+                // AppBar 半透明, 让 BackgroundService 全局背景层透出
+                backgroundColor: AppTheme.backgroundCard,
+                elevation: 0,
               ),
-        body: Container(
-          color: immersive ? Colors.black : AppTheme.backgroundPrimary,
-          // 不传 immersive，让 _buildBody 自己在 Obx 内读取 isFull/isPip
-          // 否则外层 rebuild 时内层 Obx 用的是闭包捕获的旧值
-          child: _buildBody(),
-        ),
+        body: immersive
+            // 全屏/沉浸: 视频黑底, 不需要背景层
+            ? Container(
+                color: Colors.black,
+                child: _buildBody(),
+              )
+            // 普通模式: Stack 底 = BackgroundService 全局背景, 顶 = body 内容
+            // body 透明让背景层透出, 内容里的 AppCard 等用半透明色
+            : Stack(
+                children: [
+                  Positioned.fill(
+                    child: BackgroundService.instance
+                        .buildBackground(overlayAlpha: 0.3),
+                  ),
+                  // 不传 immersive, 让 _buildBody 自己在 Obx 内读取 isFull/isPip
+                  // 否则外层 rebuild 时内层 Obx 用的是闭包捕获的旧值
+                  _buildBody(),
+                ],
+              ),
       );
     });
   }

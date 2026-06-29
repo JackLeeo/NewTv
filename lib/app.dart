@@ -792,7 +792,9 @@ class _ContentViewState extends State<ContentView>
       bottomNavigationBar: Container(
         margin: const EdgeInsets.fromLTRB(32, 0, 32, 4),
         decoration: BoxDecoration(
-          color: const Color(0xFF1C1C1E),
+          // 半透明色, 让 BackgroundService 全局背景层透出
+          // 替换原 Color(0xFF1C1C1E) (完全不透明) 造成的"黑色板块"问题
+          color: AppTheme.backgroundNavBar,
           borderRadius: BorderRadius.circular(30),
           border: Border.all(
             color: Colors.white.withValues(alpha: 0.08),

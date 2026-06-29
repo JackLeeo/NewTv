@@ -16,7 +16,9 @@ class VodCard extends StatelessWidget {
       onTap: onTap,
       child: Container(
         decoration: BoxDecoration(
-          color: AppTheme.backgroundSecondary,
+          // 半透明卡片色, 让 BackgroundService 全局背景层透出
+          // 替换原 backgroundSecondary (完全不透明) 造成的"黑色板块"问题
+          color: AppTheme.backgroundCard,
           borderRadius: BorderRadius.circular(AppTheme.radiusSM),
         ),
         clipBehavior: Clip.antiAlias,
