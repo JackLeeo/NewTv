@@ -204,9 +204,53 @@ class NodeJSManager {
     }
   }
 
-  /// 通过 management 端口让 Node.js 重新加载源
+  /// 真实 HTTP 探测 mgmtServer 是否健康
   ///
-  /// 调用方需要先确保源文件已经写到 `<Documents>/nodejs/source/`
+  /// 用于判断 Node.js 进程是否真的活着. iOS 后台过久 embed library
+  /// 可能被 SIGKILL, 但 Swift 端 `_isRunning` 状态卡在 true, Dart
+  /// 端 onNodeExit callback 不一定及时触发. **不能信 isRunning**,
+  /// 必须发真实 HTTP 请求到 mgmtServer 的 /check 端点.
+  Future<bool> verifyManagementPort(int port) async {
+    if (port <= 0) return false;
+    final dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 2),
+      sendTimeout: const Duration(seconds: 2),
+      receiveTimeout: const Duration(seconds: 2),
+    ));
+    try {
+      final resp = await dio.get<String>(
+        'http://127.0.0.1:$port/check',
+        options: Options(responseType: ResponseType.plain),
+      );
+      if (resp.statusCode != 200) {
+        AppLog.instance.log('verifyManagementPort: HTTP ${resp.statusCode} (port=$port)');
+        return false;
+      }
+      final body = resp.data ?? '';
+      // main.js /check 返回 { run: true, ready: isReady }
+      // ready=true 表示 mgmtServer listen 完
+      final ready = body.contains('"ready":true') ||
+          body.contains('"ready": true');
+      AppLog.instance.log('verifyManagementPort: port=$port, body=$body, ready=$ready');
+      return ready;
+    } catch (e) {
+      AppLog.instance.log('verifyManagementPort 失败: port=$port, $e');
+      return false;
+    }
+  }
+
+  /// 强制清空运行状态
+  ///
+  /// **关键**: iOS 后台过久 embed library 进程被 SIGKILL, 但 Swift
+  /// 端 `isRunning` 状态可能仍卡在 true (Dart 端 onNodeExit 不一定
+  /// 及时触发). handleSceneActive 探测到管理端口不可达时, 调此方法
+  /// 把 isRunning/spiderPort/managementPort 都清零, 让
+  /// _ensureNodeJSAndLoadSource 内部因 isRunning=false 真正调
+  /// startNodeJS 完整重启.
+  void forceResetRunningState() {
+    AppLog.instance.log('forceResetRunningState: 强制清运行状态');
+    _platform.forceReset();
+  }
   Future<bool> reloadSourceViaManagementPort(int port) async {
     if (port <= 0) return false;
     try {

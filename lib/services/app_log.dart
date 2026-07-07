@@ -33,8 +33,13 @@ class AppLog {
   File? _logFile;
   String _logPath = '';
   bool _initialized = false;
-  final _writeQueue = <String>[]; // 初始化前的日志先缓存
-  bool _flushing = false;
+
+  // **写文件串行化**:
+  // 之前用 writeAsString(flush: false) + 并发调用, 出现 UTF-8 多字节
+  // 字符被切到两个 write 调用中间 + 行顺序错乱 (用户日志里出现
+  // "managementPort=56297" 之后跟 "å¤\u0084 reload æº" 错乱截断)。
+  // 现在用 Future chain 串行化所有 writeAsString 调用, 保证每次写完整。
+  Future<void> _writeChain = Future<void>.value();
 
   String get logPath => _logPath;
   bool get isInitialized => _initialized;
@@ -55,11 +60,9 @@ class AppLog {
       _logFile = File('${runtimeDir.path}/app.log');
       _logPath = _logFile!.path;
       _initialized = true;
-      // 写启动标记
+      // 写启动标记 (串行化链中第一个)
       await _appendSync(
-          '=== AppLog 初始化 (Flutter ${_getFlutterInfo()}) ===');
-      // flush 初始化前的缓存
-      await _flushQueue();
+          '=== AppLog 初始化 (${_getFlutterInfo()}) ===');
     } catch (e) {
       // 初始化失败也不能 crash app
       _initialized = true; // 标记为已初始化避免重复尝试
@@ -67,70 +70,60 @@ class AppLog {
     }
   }
 
-  /// 写日志 (异步追加)
+  /// 写日志 (fire-and-forget, 内部串行化保证文件完整)
   ///
   /// - 同时 print 让 OSLog 也有记录
   /// - 文件追加失败静默
-  /// - init 之前调用会缓存, init 后 flush
-  Future<void> log(String message) async {
+  /// - **保证**: 所有 log() 调用按调用顺序完整写入文件, 不会出现截断
+  void log(String message) {
     final line = '[${DateTime.now().toIso8601String()}] $message';
     // 同步 print, 保证 OSLog 一定看到
     // ignore: avoid_print
     print(line);
-    if (!_initialized) {
-      _writeQueue.add(line);
-      return;
-    }
-    await _append(line);
+    if (!_initialized || _logFile == null) return;
+    // 串行化: 把写操作挂到 chain 末尾, 不阻塞 caller
+    _writeChain = _writeChain.then((_) async {
+      try {
+        await _logFile!.writeAsString('$line\n',
+            mode: FileMode.append, flush: true);
+      } catch (e) {
+        // 写文件失败不能 crash app, print 已经有记录
+      }
+    });
   }
 
   /// 同步追加 (仅 init 内部用, 保证启动标记一定写进去)
   Future<void> _appendSync(String line) async {
+    _writeChain = _writeChain.then((_) async {
+      try {
+        await _logFile?.writeAsString('$line\n',
+            mode: FileMode.append, flush: true);
+      } catch (_) {}
+    });
+    await _writeChain;
+  }
+
+  /// 强制 flush: 等待所有挂起的写完成
+  /// UI 调试 / 单元测试时调用
+  Future<void> flush() async {
     try {
-      await _logFile?.writeAsString('$line\n',
-          mode: FileMode.append, flush: true);
+      await _writeChain;
     } catch (_) {}
-  }
-
-  Future<void> _append(String line) async {
-    try {
-      await _logFile?.writeAsString('$line\n',
-          mode: FileMode.append, flush: false);
-    } catch (e) {
-      // 写文件失败不能 crash app, print 已经有记录
-    }
-  }
-
-  Future<void> _flushQueue() async {
-    if (_flushing) return;
-    _flushing = true;
-    try {
-      while (_writeQueue.isNotEmpty) {
-        final line = _writeQueue.removeAt(0);
-        await _append(line);
-      }
-    } finally {
-      _flushing = false;
-    }
   }
 
   String _getFlutterInfo() {
     try {
-      return 'Dart ${_dartVersion()}';
+      return 'Flutter Dart ${Platform.version.split(" ").first} on "${Platform.operatingSystem}"';
     } catch (_) {
-      return 'unknown';
+      return 'Flutter unknown';
     }
-  }
-
-  String _dartVersion() {
-    // ignore: deprecated_member_use
-    return Platform.version;
   }
 
   /// 读取最近 N 行 (给 UI 调试用)
   Future<String> readRecentLines({int lines = 100}) async {
     if (!_initialized || _logFile == null) return '';
     try {
+      await _writeChain; // 等所有 pending 写完
       final content = await _logFile!.readAsString();
       final all = content.split('\n');
       if (all.length <= lines) return content;

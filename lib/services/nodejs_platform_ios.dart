@@ -79,9 +79,17 @@ class IOSNodeJSPlatform implements NodeJSPlatform {
                 ? call.arguments as int
                 : (call.arguments is Map ? call.arguments['code'] as int? : null);
             print('[IOSNodeJS] Swift 通知: Node.js 退出，code=$code');
+            // **关键**：iOS 后台/锁屏过久 embed library 会被系统回收,
+            // 此时必须清掉旧端口, 否则 AppState.handleSceneActive 拿旧
+            // spiderPort/managementPort 去探测, connection refused 但
+            // nodeIsRunning=true 还以为进程在, 错过重启时机.
             _isRunning = false;
             _isNodeReady = false;
+            _spiderPort = 0;
+            _managementPort = 0;
             onNodeReadyChanged.value = false;
+            onManagementPortChanged.value = 0;
+            onSpiderPortChanged.value = 0;
             return null;
           case 'onNodeReady':
             print('[IOSNodeJS] Swift 通知: Node.js ready');

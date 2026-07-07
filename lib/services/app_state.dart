@@ -344,35 +344,62 @@ class AppState extends GetxController {
     AppLog.instance.log('已重建 dio session');
 
     final spiderPort = NodeJSManager.instance.spiderPort;
+    final managementPort = NodeJSManager.instance.managementPort;
     final nodeIsRunning = NodeJSManager.instance.isRunning;
-    AppLog.instance
-        .log('状态: spiderPort=$spiderPort, nodeIsRunning=$nodeIsRunning');
+    AppLog.instance.log(
+        '状态: spiderPort=$spiderPort, managementPort=$managementPort, nodeIsRunning=$nodeIsRunning');
 
-    if (spiderPort > 0 && nodeIsRunning) {
-      // 真实 HTTP 探测（替代 Socket.connect 假阳性）
-      // 验证 sourceLoaded=true 才算 Spider 真的健康
-      AppLog.instance
-          .log('verifySpiderService 开始 (port=$spiderPort)');
-      final ok =
-          await NodeJSManager.instance.verifySpiderService(spiderPort);
-      AppLog.instance.log('verifySpiderService 结果: $ok');
-      if (ok) {
-        // Spider 真的活着, HomeController.didChangeAppLifecycleState
-        // 会自动调 refresh, 不需要动 phase
+    // **第一关**: 真实 HTTP 探测 Spider 服务
+    var spiderOk = false;
+    if (spiderPort > 0) {
+      AppLog.instance.log('verifySpiderService 开始 (port=$spiderPort)');
+      try {
+        spiderOk =
+            await NodeJSManager.instance.verifySpiderService(spiderPort);
+      } catch (e) {
+        AppLog.instance.log('verifySpiderService 异常: $e');
+      }
+      AppLog.instance.log('verifySpiderService 结果: $spiderOk');
+      if (spiderOk) {
         AppLog.instance.log('Spider 健康, 不需要重连');
         return;
       }
-      // 探测失败：spiderPort 存在但 Spider 服务实际不响应
-      // （iOS 后台冻结后 socket 全断 / Spider 内部状态错乱）
-      AppLog.instance.log('Spider 不健康, 准备 reload 源');
+    } else {
+      AppLog.instance.log('spiderPort=0, 跳过 verifySpiderService');
     }
+
+    // **第二关**: 真实 HTTP 探测 mgmtServer
+    // **关键**: iOS 后台过久 embed library 可能被 SIGKILL, 但 Swift
+    // 端 _isRunning 状态卡在 true, Dart 端 onNodeExit 不一定及时触发.
+    // **不能信 isRunning**, 必须看真实端口探测.
+    var mgmtOk = false;
+    if (managementPort > 0) {
+      AppLog.instance.log('verifyManagementPort 开始 (port=$managementPort)');
+      try {
+        mgmtOk =
+            await NodeJSManager.instance.verifyManagementPort(managementPort);
+      } catch (e) {
+        AppLog.instance.log('verifyManagementPort 异常: $e');
+      }
+    } else {
+      AppLog.instance.log('managementPort=0, 跳过 verifyManagementPort');
+    }
+    AppLog.instance.log('verifyManagementPort 结果: $mgmtOk');
 
     loadingPhase.value = LoadingPhase.reconnecting;
     AppLog.instance.log('phase=reconnecting');
 
-    if (!nodeIsRunning) {
-      // 进程死了, 完整重启 Node.js + 加载源
-      AppLog.instance.log('Node.js 进程未运行, 完整重启');
+    // **决策树**:
+    // - mgmtOk=true:  Node.js 进程活着, Spider 内部状态错乱 → reload 源
+    // - mgmtOk=false: Node.js 进程死了 (iOS embed library 被回收),
+    //   即使 nodeIsRunning=true 也不信 → 完整重启
+    if (!mgmtOk) {
+      AppLog.instance.log(
+          '管理端口不可达, 判定 Node.js 死了 (nodeIsRunning=$nodeIsRunning), 完整重启');
+      // **关键**: 强制把 isRunning 状态清掉, 避免 _ensureNodeJSAndLoadSource
+      // 内部因 isRunning=true 跳过 startNodeJS
+      NodeJSManager.instance.forceResetRunningState();
+      AppLog.instance.log('已 forceResetRunningState');
       _nodeJSStarted = false;
       await _ensureNodeJSAndLoadSource();
       if (_nodeJSStarted) {
@@ -383,64 +410,45 @@ class AppState extends GetxController {
         configLoadError.value = '服务重连失败，请下拉刷新重试';
         AppLog.instance.log('完整重启失败, phase=failed');
       }
+      AppLog.instance.log('=== handleSceneActive 结束 (Node.js 死了路径) ===');
       return;
     }
 
-    // nodeIsRunning=true 但 Spider 不健康：主动 reload 源
-    // mgmtServer 还活着（Node.js 进程没死），调 /source/loadPath 让 main.js
-    // 重新 loadScript(path) + sourceModule.start(config)，spider 重新 listen
-    final managementPort = NodeJSManager.instance.managementPort;
-    AppLog.instance.log('managementPort=$managementPort');
-    if (managementPort > 0) {
-      // iOS 解冻后 management 端口可能短暂不可达, 等一下 (最多 5s)
-      var mgmtOk = false;
-      for (var i = 0; i < 5; i++) {
-        if (await NodeJSManager.instance.checkLocalPort(managementPort)) {
-          mgmtOk = true;
+    // mgmtOk=true: Node.js 进程活着, Spider 内部状态错乱, reload 源
+    AppLog.instance.log('Node.js 活着, Spider 不健康, reload 源');
+    final oldSpiderPort = spiderPort;
+    final reloaded = await NodeJSManager.instance
+        .reloadSourceViaManagementPort(managementPort);
+    AppLog.instance.log('reloadSourceViaManagementPort 结果: $reloaded');
+    if (reloaded) {
+      // 等新 spiderPort（main.js catServerFactory listening 触发
+      // /onCatPawOpenPort?port=新port&type=spider 通知 Dart）
+      // 最多 10s
+      var newPortSeen = false;
+      for (var i = 0; i < 20; i++) {
+        final newPort = NodeJSManager.instance.spiderPort;
+        if (newPort > 0 && newPort != oldSpiderPort) {
+          newPortSeen = true;
+          AppLog.instance.log(
+              '新 spiderPort 就绪: $oldSpiderPort -> $newPort (${i * 500}ms)');
           break;
         }
-        AppLog.instance.log('等 management 端口 (${i + 1}/5)');
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+      if (newPortSeen) {
+        // 给 Spider 内部 init 1s 缓冲
         await Future.delayed(const Duration(seconds: 1));
+        _nodeJSStarted = true;
+        // phase 变 completed 会触发 HomeController worker 自动 refresh
+        loadingPhase.value = LoadingPhase.completed;
+        AppLog.instance.log('reload 成功, phase=completed');
+        AppLog.instance.log('=== handleSceneActive 结束 (reload 源路径) ===');
+        return;
       }
-      if (mgmtOk) {
-        AppLog.instance.log('management 端口通, 调 reloadSource');
-        final oldSpiderPort = spiderPort;
-        final reloaded = await NodeJSManager.instance
-            .reloadSourceViaManagementPort(managementPort);
-        AppLog.instance
-            .log('reloadSourceViaManagementPort 结果: $reloaded');
-        if (reloaded) {
-          // 等新 spiderPort（main.js catServerFactory listening 触发
-          // /onCatPawOpenPort?port=新port&type=spider 通知 Dart）
-          // 最多 10s
-          var newPortSeen = false;
-          for (var i = 0; i < 20; i++) {
-            final newPort = NodeJSManager.instance.spiderPort;
-            if (newPort > 0 && newPort != oldSpiderPort) {
-              newPortSeen = true;
-              AppLog.instance.log(
-                  '新 spiderPort 就绪: $oldSpiderPort -> $newPort (${i * 500}ms)');
-              break;
-            }
-            await Future.delayed(const Duration(milliseconds: 500));
-          }
-          if (newPortSeen) {
-            // 给 Spider 内部 init 1s 缓冲（sourceModule.start 后 init 请求处理）
-            await Future.delayed(const Duration(seconds: 1));
-            _nodeJSStarted = true;
-            // phase 变 completed 会触发 HomeController worker 自动 refresh
-            loadingPhase.value = LoadingPhase.completed;
-            AppLog.instance.log('reload 成功, phase=completed');
-            return;
-          }
-          AppLog.instance.log('reload 后 10s 内未拿到新 spiderPort');
-        }
-      } else {
-        AppLog.instance.log('management 端口 5s 内都不可达');
-      }
+      AppLog.instance.log('reload 后 10s 内未拿到新 spiderPort');
     }
 
-    // reload 失败兜底: 走原 _recoverSpiderService（多次重试 + 端口检查）
+    // 兜底: 走原 _recoverSpiderService（多次重试 + 端口检查）
     AppLog.instance.log('走兜底 _recoverSpiderService');
     final recovered = await _recoverSpiderService();
     AppLog.instance.log('_recoverSpiderService 结果: $recovered');
@@ -450,7 +458,7 @@ class AppState extends GetxController {
       loadingPhase.value = LoadingPhase.failed;
       configLoadError.value = '服务已断开，请关闭应用后重新打开';
     }
-    AppLog.instance.log('=== handleSceneActive 结束 ===');
+    AppLog.instance.log('=== handleSceneActive 结束 (兜底路径) ===');
   }
 
   /// 恢复 Spider 服务 - 对应 Swift recoverSpiderService
