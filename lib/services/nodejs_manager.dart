@@ -164,6 +164,45 @@ class NodeJSManager {
     }
   }
 
+  /// 真实 HTTP 探测 Spider 服务是否健康
+  ///
+  /// **关键**：区别于 [checkLocalPort] 只用 Socket.connect 探测端口。
+  /// iOS 后台冻结 Node.js 进程时，loopback 端口探测可能假阳性（OS 接受
+  /// 新 TCP 连接但 Spider 服务实际不响应），导致 handleSceneActive 误判
+  /// "端口通" 直接 return，错过 reload 源的时机。
+  ///
+  /// 这里用 dio 发真实 HTTP GET 到 `/source/status` 端点（main.js 实现），
+  /// 验证返回 `{sourceLoaded:true, ...}` 才算 Spider 真的健康。
+  /// 2s 超时避免锁屏切回时长时间卡住。
+  Future<bool> verifySpiderService(int port) async {
+    if (port <= 0) return false;
+    final dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 2),
+      sendTimeout: const Duration(seconds: 2),
+      receiveTimeout: const Duration(seconds: 2),
+    ));
+    try {
+      final resp = await dio.get<String>(
+        'http://127.0.0.1:$port/source/status',
+        options: Options(responseType: ResponseType.plain),
+      );
+      if (resp.statusCode != 200) {
+        print('[NodeJSManager] verifySpiderService: HTTP ${resp.statusCode}');
+        return false;
+      }
+      final body = resp.data ?? '';
+      // main.js /source/status 返回 { sourceLoaded: sourceModule !== null, ... }
+      // 必须 sourceLoaded=true 才算 Spider 真的健康 (源已加载 + spider 已 listen)
+      final loaded = body.contains('"sourceLoaded":true') ||
+          body.contains('"sourceLoaded": true');
+      print('[NodeJSManager] verifySpiderService: port=$port, sourceLoaded=$loaded');
+      return loaded;
+    } catch (e) {
+      print('[NodeJSManager] verifySpiderService 失败: port=$port, $e');
+      return false;
+    }
+  }
+
   /// 通过 management 端口让 Node.js 重新加载源
   ///
   /// 调用方需要先确保源文件已经写到 `<Documents>/nodejs/source/`

@@ -316,9 +316,19 @@ class AppState extends GetxController {
   // ============================================================
 
   /// 应用恢复前台时检查服务状态 - 对应 Swift handleSceneActive
-  /// 关键：必须**立即**重建 dio，而不是等到端口检查失败后才重建。
-  /// 否则 iOS 后台/锁屏后切回前台时，dio 复用的 socket 已被系统断开，
-  /// 用户的下一次点击会立即发起请求（用死 socket）而失败。
+  ///
+  /// **核心修复**（之前 17 个 iOS 修复都没解决核心问题）：
+  /// 不能只靠 `checkLocalPort` 探测端口 — iOS 后台冻结 Node.js 进程时
+  /// loopback 端口探测假阳性（OS 接受新 TCP 连接但 Spider 服务实际不响应），
+  /// 会误判 Spider 活着直接 return，错过 reload 源时机，导致
+  /// HomeController refresh → getHomeContent 拿到空数据。
+  ///
+  /// 正确流程：
+  /// 1. 立即重建 dio（恢复 iOS 后台断开的 socket）
+  /// 2. **真实 HTTP 探测** verifySpiderService（2s 超时，验证 sourceLoaded=true）
+  /// 3. 失败时主动 reloadSourceViaManagementPort 让 Node.js 重新 loadScript
+  /// 4. 等新 spiderPort（reload 后源会重新 listen 端口）
+  /// 5. 失败兜底走 _recoverSpiderService（多次重试 + 软重启）
   Future<void> handleSceneActive() async {
     if (!isConfigLoaded.value) return;
     final hasSpiderSource =
@@ -333,29 +343,82 @@ class AppState extends GetxController {
     final nodeIsRunning = NodeJSManager.instance.isRunning;
 
     if (spiderPort > 0 && nodeIsRunning) {
-      if (await NodeJSManager.instance.checkLocalPort(spiderPort)) return;
+      // 真实 HTTP 探测（替代 Socket.connect 假阳性）
+      // 验证 sourceLoaded=true 才算 Spider 真的健康
+      if (await NodeJSManager.instance.verifySpiderService(spiderPort)) {
+        // Spider 真的活着, HomeController.didChangeAppLifecycleState
+        // 会自动调 refresh, 不需要动 phase
+        return;
+      }
+      // 探测失败：spiderPort 存在但 Spider 服务实际不响应
+      // （iOS 后台冻结后 socket 全断 / Spider 内部状态错乱）
     }
 
     loadingPhase.value = LoadingPhase.reconnecting;
 
     if (!nodeIsRunning) {
+      // 进程死了, 完整重启 Node.js + 加载源
       _nodeJSStarted = false;
       await _ensureNodeJSAndLoadSource();
-
       if (_nodeJSStarted) {
         loadingPhase.value = LoadingPhase.completed;
       } else {
         loadingPhase.value = LoadingPhase.failed;
         configLoadError.value = '服务重连失败，请下拉刷新重试';
       }
-    } else {
-      final recovered = await _recoverSpiderService();
-      if (recovered) {
-        loadingPhase.value = LoadingPhase.completed;
-      } else {
-        loadingPhase.value = LoadingPhase.failed;
-        configLoadError.value = '服务已断开，请关闭应用后重新打开';
+      return;
+    }
+
+    // nodeIsRunning=true 但 Spider 不健康：主动 reload 源
+    // mgmtServer 还活着（Node.js 进程没死），调 /source/loadPath 让 main.js
+    // 重新 loadScript(path) + sourceModule.start(config)，spider 重新 listen
+    final managementPort = NodeJSManager.instance.managementPort;
+    if (managementPort > 0) {
+      // iOS 解冻后 management 端口可能短暂不可达, 等一下 (最多 5s)
+      var mgmtOk = false;
+      for (var i = 0; i < 5; i++) {
+        if (await NodeJSManager.instance.checkLocalPort(managementPort)) {
+          mgmtOk = true;
+          break;
+        }
+        await Future.delayed(const Duration(seconds: 1));
       }
+      if (mgmtOk) {
+        final oldSpiderPort = spiderPort;
+        final reloaded = await NodeJSManager.instance
+            .reloadSourceViaManagementPort(managementPort);
+        if (reloaded) {
+          // 等新 spiderPort（main.js catServerFactory listening 触发
+          // /onCatPawOpenPort?port=新port&type=spider 通知 Dart）
+          // 最多 10s
+          var newPortSeen = false;
+          for (var i = 0; i < 20; i++) {
+            final newPort = NodeJSManager.instance.spiderPort;
+            if (newPort > 0 && newPort != oldSpiderPort) {
+              newPortSeen = true;
+              break;
+            }
+            await Future.delayed(const Duration(milliseconds: 500));
+          }
+          if (newPortSeen) {
+            // 给 Spider 内部 init 1s 缓冲（sourceModule.start 后 init 请求处理）
+            await Future.delayed(const Duration(seconds: 1));
+            _nodeJSStarted = true;
+            // phase 变 completed 会触发 HomeController worker 自动 refresh
+            loadingPhase.value = LoadingPhase.completed;
+            return;
+          }
+        }
+      }
+    }
+
+    // reload 失败兜底: 走原 _recoverSpiderService（多次重试 + 端口检查）
+    final recovered = await _recoverSpiderService();
+    if (recovered) {
+      loadingPhase.value = LoadingPhase.completed;
+    } else {
+      loadingPhase.value = LoadingPhase.failed;
+      configLoadError.value = '服务已断开，请关闭应用后重新打开';
     }
   }
 
