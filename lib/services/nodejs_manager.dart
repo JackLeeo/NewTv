@@ -115,6 +115,7 @@ class NodeJSManager {
   }
 
   void forceResetRunningState() {
+    AppLog.instance.log('forceResetRunningState: 强制清运行状态 + 停 HTTP server');
     _platform.forceResetRunningState();
     _stopHttpServer();
   }
@@ -239,18 +240,6 @@ class NodeJSManager {
     }
   }
 
-  /// 强制清空运行状态
-  ///
-  /// **关键**: iOS 后台过久 embed library 进程被 SIGKILL, 但 Swift
-  /// 端 `isRunning` 状态可能仍卡在 true (Dart 端 onNodeExit 不一定
-  /// 及时触发). handleSceneActive 探测到管理端口不可达时, 调此方法
-  /// 把 isRunning/spiderPort/managementPort 都清零, 让
-  /// _ensureNodeJSAndLoadSource 内部因 isRunning=false 真正调
-  /// startNodeJS 完整重启.
-  void forceResetRunningState() {
-    AppLog.instance.log('forceResetRunningState: 强制清运行状态');
-    _platform.forceReset();
-  }
   Future<bool> reloadSourceViaManagementPort(int port) async {
     if (port <= 0) return false;
     try {
