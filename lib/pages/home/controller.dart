@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 import '../../models/movie.dart';
 import '../../models/movie_sort.dart';
 import '../../services/api_config.dart';
+import '../../services/app_log.dart';
 import '../../services/app_state.dart';
 import '../../services/source_service.dart';
 
@@ -84,11 +85,13 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     //    导致 isLoading 一直卡在 true，新点击的请求被跳过）
     // 2. 主动刷新数据（homeSourceBean 引用没变，ever 监听不会触发；
     //    且 iOS 后台时 dio socket 已死，旧 dio 不能再用）
+    AppLog.instance.log('HomeController didChangeAppLifecycleState: $state');
     if (state == AppLifecycleState.resumed) {
       isLoading.value = false;
       // 延后一帧执行，避免在 build 阶段触发 setState
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!isClosed) {
+          AppLog.instance.log('HomeController resumed → refresh()');
           refresh();
         }
       });

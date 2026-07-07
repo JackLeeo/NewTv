@@ -27,6 +27,7 @@ import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
 
+import 'app_log.dart';
 import 'nodejs_platform.dart';
 import 'nodejs_platform_android.dart';
 import 'nodejs_platform_ios.dart';
@@ -187,7 +188,7 @@ class NodeJSManager {
         options: Options(responseType: ResponseType.plain),
       );
       if (resp.statusCode != 200) {
-        print('[NodeJSManager] verifySpiderService: HTTP ${resp.statusCode}');
+        AppLog.instance.log('verifySpiderService: HTTP ${resp.statusCode} (port=$port)');
         return false;
       }
       final body = resp.data ?? '';
@@ -195,10 +196,10 @@ class NodeJSManager {
       // 必须 sourceLoaded=true 才算 Spider 真的健康 (源已加载 + spider 已 listen)
       final loaded = body.contains('"sourceLoaded":true') ||
           body.contains('"sourceLoaded": true');
-      print('[NodeJSManager] verifySpiderService: port=$port, sourceLoaded=$loaded');
+      AppLog.instance.log('verifySpiderService: port=$port, body=$body, sourceLoaded=$loaded');
       return loaded;
     } catch (e) {
-      print('[NodeJSManager] verifySpiderService 失败: port=$port, $e');
+      AppLog.instance.log('verifySpiderService 失败: port=$port, $e');
       return false;
     }
   }

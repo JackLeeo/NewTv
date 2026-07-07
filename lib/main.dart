@@ -7,12 +7,17 @@ import 'package:window_manager/window_manager.dart';
 import 'app.dart';
 import 'models/cache_store.dart';
 import 'services/api_config.dart';
+import 'services/app_log.dart';
 import 'services/app_state.dart';
 import 'services/background_service.dart';
 import 'pages/search/controller.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 初始化 AppLog — 必须早于 runApp, 否则 handleSceneActive 等
+  // 关键事件写不进 <Documents>/nodejs-project/runtime/app.log
+  await AppLog.instance.init();
 
   // 初始化 media_kit
   MediaKit.ensureInitialized();

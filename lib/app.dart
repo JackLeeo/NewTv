@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'common/theme.dart';
 import 'common/constants.dart';
 import 'services/app_state.dart';
+import 'services/app_log.dart';
 import 'services/background_service.dart';
 import 'services/nodejs_manager.dart';
 import 'pages/home/view.dart';
@@ -110,6 +111,7 @@ class _ContentViewState extends State<ContentView>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // 对应 Swift onChange(of: scenePhase) - 应用恢复前台时检查服务
+    AppLog.instance.log('ContentView didChangeAppLifecycleState: $state');
     if (state == AppLifecycleState.resumed) {
       final appState = Get.find<AppState>();
       appState.handleSceneActive();
