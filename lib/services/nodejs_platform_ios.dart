@@ -26,6 +26,7 @@ import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'app_log.dart';
 import 'nodejs_platform.dart';
 
 class IOSNodeJSPlatform implements NodeJSPlatform {
@@ -93,6 +94,7 @@ class IOSNodeJSPlatform implements NodeJSPlatform {
             return null;
           case 'onNodeReady':
             print('[IOSNodeJS] Swift 通知: Node.js ready');
+            AppLog.instance.log('IOSNodeJS onNodeReady 回调');
             _isNodeReady = true;
             onNodeReadyChanged.value = true;
             return null;
@@ -137,6 +139,7 @@ class IOSNodeJSPlatform implements NodeJSPlatform {
 
   @override
   Future<bool> startNodeJS() async {
+    AppLog.instance.log('IOSNodeJS startNodeJS 开始 (isRunning=$_isRunning)');
     if (_isRunning) return true;
 
     _isNodeReady = false;
@@ -149,6 +152,8 @@ class IOSNodeJSPlatform implements NodeJSPlatform {
     final sourcePath = await getDocumentsSourcePath();
     final nativePort = _nativeServerPort;
 
+    AppLog.instance.log(
+        'IOSNodeJS 调 Swift 启动 Node.js, nativePort=$nativePort, sourcePath=$sourcePath');
     print('[IOSNodeJS] 调 Swift 启动 Node.js, nativePort=$nativePort, '
         'sourcePath=$sourcePath');
 
@@ -164,18 +169,25 @@ class IOSNodeJSPlatform implements NodeJSPlatform {
         'nativePort': nativePort,
         'sourcePath': sourcePath,
       });
+      AppLog.instance.log('IOSNodeJS Swift invokeMethod 返回: $result');
       if (result == true) {
         _isRunning = true;
         print('[IOSNodeJS] Swift 启动成功');
-        return await waitForNodeReady();
+        AppLog.instance.log('IOSNodeJS Swift 启动成功, 等 waitForNodeReady');
+        final ready = await waitForNodeReady();
+        AppLog.instance.log('IOSNodeJS waitForNodeReady 返回: $ready');
+        return ready;
       }
       print('[IOSNodeJS] Swift 启动失败');
+      AppLog.instance.log('IOSNodeJS Swift 启动失败');
       return false;
     } on PlatformException catch (e) {
       print('[IOSNodeJS] startNodeJS PlatformException: ${e.code}/${e.message}');
+      AppLog.instance.log('IOSNodeJS startNodeJS PlatformException: ${e.code}/${e.message}');
       return false;
-    } catch (e) {
+    } catch (e, st) {
       print('[IOSNodeJS] startNodeJS 异常: $e');
+      AppLog.instance.log('IOSNodeJS startNodeJS 异常: $e\n$st');
       return false;
     }
   }
@@ -219,6 +231,7 @@ class IOSNodeJSPlatform implements NodeJSPlatform {
   /// HTTP server 收到 Node.js 的 `/onCatPawOpenPort?port=&type=` 时调用
   void onPortReceived(int port, String type) {
     print('[IOSNodeJS] 收到端口通知: $port, 类型: $type');
+    AppLog.instance.log('IOSNodeJS onPortReceived: port=$port, type=$type');
     if (type == 'management') {
       _managementPort = port;
       onManagementPortChanged.value = port;

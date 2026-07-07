@@ -115,9 +115,16 @@ class NodeJSManager {
   }
 
   void forceResetRunningState() {
-    AppLog.instance.log('forceResetRunningState: 强制清运行状态 + 停 HTTP server');
+    // **关键**: 不停 Dart HTTP server. Node.js 死了之后, iOS 唤醒
+    // 触发 handleSceneActive, 如果停掉 Dart HTTP server 然后调
+    // startNodeJS 重启 Node.js, Node.js 启动后通过 onCatPawOpenPort
+    // 通知 Dart 新端口 — 但 Dart HTTP server 刚停/正在重启, 新连接
+    // 进不来, 通知丢失, Dart 永远拿不到新端口, verify 永远失败.
+    //
+    // HTTP server 必须一直跑, Node.js 任何时候启动都能通知到.
+    // 之前 79177e1 行为就是只清状态不停 server, 才是对的.
+    AppLog.instance.log('forceResetRunningState: 强制清运行状态 (保留 HTTP server)');
     _platform.forceResetRunningState();
-    _stopHttpServer();
   }
 
   Future<bool> waitForNodeReady() => _platform.waitForNodeReady();

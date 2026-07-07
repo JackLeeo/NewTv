@@ -179,30 +179,48 @@ class AppState extends GetxController {
 
     if (!_nodeJSStarted) {
       // 0) 如果 node.exe 缺失，先下载（弹进度 dialog）
-      if (!await NodeJSManager.instance.isNodeRuntimeInstalled()) {
-        print('[AppState] node.exe 缺失，准备下载...');
-        loadingPhase.value = LoadingPhase.downloadingNodeJS;
-        final cfg = NodeJSManager.instance.nodeDownloadConfig ??
-            await NodeJSManager.loadNodeDownloadConfigStatic();
-        try {
-          await NodeJSManager.instance.downloadAndExtractNodeRuntime(cfg);
-        } catch (e) {
-          loadingPhase.value = LoadingPhase.failed;
-          configLoadError.value = 'Node.js 下载失败: $e';
-          print('[AppState] Node.js 下载失败: $e');
-          return;
+      try {
+        if (!await NodeJSManager.instance.isNodeRuntimeInstalled()) {
+          print('[AppState] node.exe 缺失，准备下载...');
+          AppLog.instance.log('node.exe 缺失, 准备下载');
+          loadingPhase.value = LoadingPhase.downloadingNodeJS;
+          final cfg = NodeJSManager.instance.nodeDownloadConfig ??
+              await NodeJSManager.loadNodeDownloadConfigStatic();
+          try {
+            await NodeJSManager.instance.downloadAndExtractNodeRuntime(cfg);
+          } catch (e) {
+            loadingPhase.value = LoadingPhase.failed;
+            configLoadError.value = 'Node.js 下载失败: $e';
+            print('[AppState] Node.js 下载失败: $e');
+            AppLog.instance.log('Node.js 下载失败: $e');
+            return;
+          }
         }
+      } catch (e) {
+        AppLog.instance.log('isNodeRuntimeInstalled 异常: $e');
       }
 
+      AppLog.instance.log('phase=startingNodeJS');
       loadingPhase.value = LoadingPhase.startingNodeJS;
-      final success = await NodeJSManager.instance.startNodeJS();
-      if (success) {
-        _nodeJSStarted = true;
-        await _loadSpiderSource();
-      } else {
+      try {
+        AppLog.instance.log('调 startNodeJS');
+        final success = await NodeJSManager.instance.startNodeJS();
+        AppLog.instance.log('startNodeJS 返回: $success');
+        if (success) {
+          _nodeJSStarted = true;
+          AppLog.instance.log('调 _loadSpiderSource');
+          await _loadSpiderSource();
+        } else {
+          loadingPhase.value = LoadingPhase.failed;
+          configLoadError.value = 'Node.js 启动失败';
+          print('[AppState] Node.js 启动失败');
+          AppLog.instance.log('Node.js 启动失败');
+        }
+      } catch (e, st) {
+        AppLog.instance.log('startNodeJS 异常: $e\n$st');
         loadingPhase.value = LoadingPhase.failed;
-        configLoadError.value = 'Node.js 启动失败';
-        print('[AppState] Node.js 启动失败');
+        configLoadError.value = 'Node.js 启动异常: $e';
+        print('[AppState] Node.js 启动异常: $e');
       }
     } else {
       await _loadSpiderSource();
@@ -463,27 +481,37 @@ class AppState extends GetxController {
 
   /// 恢复 Spider 服务 - 对应 Swift recoverSpiderService
   Future<bool> _recoverSpiderService() async {
+    AppLog.instance.log('_recoverSpiderService 等待 2s...');
     await Future.delayed(const Duration(seconds: 2));
 
     for (var attempt = 0; attempt < 4; attempt++) {
+      AppLog.instance.log('_recoverSpiderService 尝试 ${attempt + 1}/4');
       final spiderPort = NodeJSManager.instance.spiderPort;
+      AppLog.instance.log('  当前 spiderPort=$spiderPort');
       if (spiderPort > 0) {
         if (await NodeJSManager.instance.checkLocalPort(spiderPort)) {
+          AppLog.instance.log('  spiderPort 通, 恢复成功');
           _nodeJSStarted = true;
           return true;
         }
       }
 
       final managementPort = NodeJSManager.instance.managementPort;
+      AppLog.instance.log('  当前 managementPort=$managementPort');
       if (managementPort > 0) {
         if (await NodeJSManager.instance.checkLocalPort(managementPort)) {
           final reloaded = await NodeJSManager.instance
               .reloadSourceViaManagementPort(managementPort);
+          AppLog.instance.log('  managementPort 通, reloadSource=$reloaded');
           if (reloaded) {
             _nodeJSStarted = true;
             return true;
           }
+        } else {
+          AppLog.instance.log('  managementPort 不通');
         }
+      } else {
+        AppLog.instance.log('  managementPort=0, 跳过');
       }
 
       if (attempt < 3) {
@@ -491,6 +519,7 @@ class AppState extends GetxController {
       }
     }
 
+    AppLog.instance.log('_recoverSpiderService 4 次都失败');
     return false;
   }
 
