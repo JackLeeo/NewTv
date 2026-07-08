@@ -669,7 +669,98 @@ class AppState extends GetxController {
 
     AppLog.instance.sceneStep(cid, 'recover_all_fail',
         level: LogLevel.error, fields: {'attempts': 4});
-    return false;
+
+    // **iOS SIGKILL 兜底**: 4 次 checkLocalPort 全 fail + ports 真死 (Connection
+    // refused), 说明 Node.js 真的被杀了. 之前 d5c5f17 加的 Swift didBecomeActive
+    // ping 在「先后台再锁屏」场景不可靠 (深后台 MethodChannel 可能短暂断,
+    // ping 完了 onNodeExit 也传不到 Dart), 表现为:
+    //   - 8 秒后 finalNodeIsRunning 仍 = true (log 实证)
+    //   - 4 次 checkLocalPort 全 Connection refused
+    // 不能依赖 Swift 通知, 必须 Dart 端主动检测 + 强制重启.
+    //
+    // **强制重启流程**:
+    //   1. resetPlatformStateForRestart() 调平台 stopNodeJS, Swift 端
+    //      isRunning 清 false (平台 stopNodeJS 调 invokeMethod 'stopNodeJS'
+    //      → Swift 端 isRunning=false). **不**停 HTTP server.
+    //   2. 短 wait 200ms 等 Swift 异步处理 stopNodeJS invokeMethod
+    //   3. startNodeJS() 调 Swift 启动新 Node.js (Swift 端 isRunning=false
+    //      会接受启动). 新 Node.js 启动后 onCatPawOpenPort 通过一直跑着的
+    //      HTTP server 通知 Dart 新端口.
+    //   4. 等 1s 让端口同步, 然后 reloadSourceViaManagementPort 重新加载源.
+    AppLog.instance.sceneStep(cid, 'force_restart_triggered',
+        level: LogLevel.warn,
+        fields: {
+          'reason':
+              '4 次 checkLocalPort 全 fail + ports 真死, iOS SIGKILL 场景, 强制重启 Node.js',
+          'beforeIsRunning': NodeJSManager.instance.isRunning,
+          'beforeSpiderPort': NodeJSManager.instance.spiderPort,
+          'beforeMgmtPort': NodeJSManager.instance.managementPort,
+        });
+
+    if (NodeJSManager.instance.isRunning) {
+      // isRunning 卡 true, 必须先清状态才能调 startNodeJS
+      NodeJSManager.instance.resetPlatformStateForRestart();
+      // Swift invokeMethod 是异步的, 等 200ms 让 Swift 端处理 stopNodeJS
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+
+    final restartStart = DateTime.now();
+    final restartOk = await NodeJSManager.instance.startNodeJS();
+    AppLog.instance.sceneStep(
+      cid,
+      restartOk ? 'force_restart_start_ok' : 'force_restart_start_fail',
+      elapsedMs: DateTime.now().difference(restartStart).inMilliseconds,
+      level: restartOk ? LogLevel.info : LogLevel.error,
+      fields: {'ok': restartOk},
+    );
+    if (!restartOk) {
+      return false;
+    }
+
+    // 等新端口同步 (新 Node.js 启动后会通过 onCatPawOpenPort 通知 Dart)
+    await Future.delayed(const Duration(milliseconds: 1000));
+    final newMgmtPort = NodeJSManager.instance.managementPort;
+    final newSpiderPort = NodeJSManager.instance.spiderPort;
+    AppLog.instance.sceneStep(cid, 'force_restart_ports_synced',
+        fields: {
+          'newSpiderPort': newSpiderPort,
+          'newMgmtPort': newMgmtPort,
+          'waitedMs': 1000,
+        });
+    if (newMgmtPort <= 0) {
+      AppLog.instance.sceneStep(cid, 'force_restart_no_mgmt_port',
+          level: LogLevel.error,
+          fields: {
+            'reason':
+                'startNodeJS 返 true 但 1s 后 mgmt port 仍未同步, 重启失败',
+          });
+      return false;
+    }
+
+    // 用新 mgmt port 重新加载源
+    final reloadStart = DateTime.now();
+    final reloaded = await NodeJSManager.instance
+        .reloadSourceViaManagementPort(newMgmtPort);
+    AppLog.instance.sceneStep(
+      cid,
+      reloaded ? 'force_restart_reload_ok' : 'force_restart_reload_fail',
+      elapsedMs: DateTime.now().difference(reloadStart).inMilliseconds,
+      level: reloaded ? LogLevel.info : LogLevel.warn,
+      fields: {'ok': reloaded, 'managementPort': newMgmtPort},
+    );
+    if (reloaded) {
+      _nodeJSStarted = true;
+      AppLog.instance.sceneStep(cid, 'force_restart_recovered',
+          level: LogLevel.info,
+          fields: {
+            'newSpiderPort': NodeJSManager.instance.spiderPort,
+            'newMgmtPort': newMgmtPort,
+          });
+      return true;
+    }
+    // 源 reload 失败, 但 Node.js 重启成功了, 算部分恢复
+    _nodeJSStarted = true;
+    return true;
   }
 
   // ============================================================
