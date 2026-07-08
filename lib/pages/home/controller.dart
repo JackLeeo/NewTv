@@ -101,7 +101,7 @@ class HomeController extends GetxController with WidgetsBindingObserver {
       source: 'HomeController',
       fields: {
         if (sincePrevMs != null) 'sincePrevMs': sincePrevMs,
-        'homeSourceId': ApiConfig.instance.homeSourceBean.value?.id,
+        'homeSourceKey': ApiConfig.instance.homeSourceBean.value?.key,
         'sortsCount': sorts.length,
         'homeVideosCount': homeVideos.length,
         'categoryVideosCount': categoryVideos.length,
