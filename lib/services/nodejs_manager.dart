@@ -211,25 +211,35 @@ class NodeJSManager {
     }
   }
 
-  /// 真实 HTTP 探测 Spider 服务是否健康
+  /// 真实 HTTP 探测 Node.js 源是否已加载
   ///
   /// **关键**：区别于 [checkLocalPort] 只用 Socket.connect 探测端口。
   /// iOS 后台冻结 Node.js 进程时，loopback 端口探测可能假阳性（OS 接受
   /// 新 TCP 连接但 Spider 服务实际不响应），导致 handleSceneActive 误判
   /// "端口通" 直接 return，错过 reload 源的时机。
   ///
-  /// 这里用 dio 发真实 HTTP GET 到 `/source/status` 端点（main.js 实现），
-  /// 验证返回 `{sourceLoaded:true, ...}` 才算 Spider 真的健康。
+  /// 用 dio 发真实 HTTP GET 到 mgmtServer 的 `/source/status` 端点
+  /// （main.js 实现），验证返回 `{sourceLoaded:true, ...}` 才算
+  /// Node.js 真的健康。
+  ///
+  /// **2026-07-08 修复端口错 bug**:
+  /// 旧版 verifySpiderService(int spiderPort) 调 `http://127.0.0.1:9988/source/status`
+  /// 永远 404, 因为 `/source/status` 是 **mgmtServer 端点**, 监听在
+  /// managementPort (e.g. 52274), 不是 spiderPort (9988). spiderServer
+  /// 是 catServerFactory 创建的, 路由由 source/index.js 注册, 不会暴露
+  /// `/source/status`. 改用 managementPort 后 8ms 404 -> 8ms 200,
+  /// 消除 10s 兜底 reload_no_new_port.
   /// 2s 超时避免锁屏切回时长时间卡住。
-  Future<bool> verifySpiderService(int port) async {
-    if (port <= 0) {
-      AppLog.instance.verify('skip', port: port, ok: false,
-          error: 'port <= 0');
+  Future<bool> verifySourceLoaded(int managementPort) async {
+    if (managementPort <= 0) {
+      AppLog.instance.verify('skip', port: managementPort, ok: false,
+          error: 'managementPort <= 0');
       return false;
     }
     final startAt = DateTime.now();
-    final url = 'http://127.0.0.1:$port/source/status';
-    AppLog.instance.http('GET', url, port: port, caller: 'verifySpiderService');
+    final url = 'http://127.0.0.1:$managementPort/source/status';
+    AppLog.instance.http('GET', url, port: managementPort,
+        caller: 'verifySourceLoaded');
     final dio = Dio(BaseOptions(
       connectTimeout: const Duration(seconds: 2),
       sendTimeout: const Duration(seconds: 2),
@@ -242,34 +252,34 @@ class NodeJSManager {
       );
       final elapsed = DateTime.now().difference(startAt).inMilliseconds;
       if (resp.statusCode != 200) {
-        AppLog.instance.http('GET', url, port: port,
+        AppLog.instance.http('GET', url, port: managementPort,
             statusCode: resp.statusCode, elapsedMs: elapsed, ok: false,
-            caller: 'verifySpiderService');
-        AppLog.instance.verify('http_non_200', port: port,
+            caller: 'verifySourceLoaded');
+        AppLog.instance.verify('http_non_200', port: managementPort,
             statusCode: resp.statusCode, elapsedMs: elapsed, ok: false,
             error: 'HTTP ${resp.statusCode}');
         return false;
       }
       final body = resp.data ?? '';
       // main.js /source/status 返回 { sourceLoaded: sourceModule !== null, ... }
-      // 必须 sourceLoaded=true 才算 Spider 真的健康 (源已加载 + spider 已 listen)
+      // 必须 sourceLoaded=true 才算 Node.js 源真的已加载
       final loaded = body.contains('"sourceLoaded":true') ||
           body.contains('"sourceLoaded": true');
-      AppLog.instance.http('GET', url, port: port,
+      AppLog.instance.http('GET', url, port: managementPort,
           statusCode: resp.statusCode, elapsedMs: elapsed, ok: true,
-          caller: 'verifySpiderService');
-      AppLog.instance.verify('parse', port: port,
+          caller: 'verifySourceLoaded');
+      AppLog.instance.verify('parse', port: managementPort,
           statusCode: resp.statusCode, elapsedMs: elapsed,
           ok: loaded, body: body,
           fields: {'sourceLoaded': loaded});
       return loaded;
     } catch (e) {
       final elapsed = DateTime.now().difference(startAt).inMilliseconds;
-      AppLog.instance.http('GET', url, port: port,
+      AppLog.instance.http('GET', url, port: managementPort,
           elapsedMs: elapsed, ok: false,
           error: e.toString(),
-          caller: 'verifySpiderService');
-      AppLog.instance.verify('exception', port: port,
+          caller: 'verifySourceLoaded');
+      AppLog.instance.verify('exception', port: managementPort,
           elapsedMs: elapsed, ok: false, error: e.toString());
       return false;
     }

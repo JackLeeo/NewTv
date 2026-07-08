@@ -342,7 +342,10 @@ class AppState extends GetxController {
   ///
   /// **回退到 0199b73 行为**（用户测试 0199b73 能正常恢复锁屏切回）:
   /// 1. 立即重建 dio（恢复 iOS 后台断开的 socket）
-  /// 2. 真实 HTTP 探测 verifySpiderService（2s 超时，验证 sourceLoaded=true）
+  /// 2. 真实 HTTP 探测 verifySourceLoaded（2s 超时，验证 sourceLoaded=true）
+  ///    **2026-07-08 修复**: 旧版用 spiderPort (9988) 调 /source/status 永远 404,
+  ///    改用 managementPort (e.g. 52274). /source/status 是 mgmtServer 端点,
+  ///    不是 spiderServer 端点.
   /// 3. 失败时主动 reloadSourceViaManagementPort 让 Node.js 重新 loadScript
   /// 4. 等新 spiderPort（reload 后源会重新 listen 端口）
   /// 5. 失败兜底走 _recoverSpiderService（4 次重试）
@@ -453,19 +456,21 @@ class AppState extends GetxController {
     SpiderService.instance.invalidateSession();
     NetworkManager.instance.invalidateSession();
 
-    // **第二关**: 真实 HTTP 探测 Spider 服务
-    if (spiderPort > 0) {
+    // **第二关**: 真实 HTTP 探测 mgmtServer 的 /source/status 端点
+    // **2026-07-08 修复**: 旧版用 spiderPort (9988) 调永远 404,
+    // 改成用 managementPort. /source/status 是 mgmtServer 端点不是 spiderServer.
+    if (managementPort > 0) {
       final verifyStart = DateTime.now();
       AppLog.instance.sceneStep(cid, 'verify_start',
-          fields: {'spiderPort': spiderPort});
+          fields: {'managementPort': managementPort});
       try {
-        final ok =
-            await NodeJSManager.instance.verifySpiderService(spiderPort);
+        final ok = await NodeJSManager.instance
+            .verifySourceLoaded(managementPort);
         AppLog.instance.sceneStep(
           cid,
           ok ? 'verify_ok' : 'verify_fail',
           elapsedMs: DateTime.now().difference(verifyStart).inMilliseconds,
-          fields: {'spiderPort': spiderPort, 'ok': ok},
+          fields: {'managementPort': managementPort, 'ok': ok},
         );
         if (ok) {
           AppLog.instance.sceneEnd(
@@ -483,13 +488,13 @@ class AppState extends GetxController {
           'verify_exception',
           elapsedMs: DateTime.now().difference(verifyStart).inMilliseconds,
           level: LogLevel.error,
-          fields: {'spiderPort': spiderPort},
+          fields: {'managementPort': managementPort},
           error: e.toString(),
         );
       }
     } else {
       AppLog.instance.sceneStep(cid, 'verify_skip',
-          fields: {'reason': 'spiderPort=0'});
+          fields: {'reason': 'managementPort=0'});
     }
 
     loadingPhase.value = LoadingPhase.reconnecting;
