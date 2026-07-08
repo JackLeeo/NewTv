@@ -235,6 +235,12 @@ class IOSNodeJSPlatform implements NodeJSPlatform {
     if (type == 'management') {
       _managementPort = port;
       onManagementPortChanged.value = port;
+      // **iOS SIGKILL 修复**: 同步 mgmt port 给 Swift,
+      // Swift 在 app 回前台时主动 ping /check 确认 Node.js 是否被 SIGKILL
+      _channel.invokeMethod('setManagementPort', {'port': port}).catchError((e) {
+        print('[IOSNodeJS] setManagementPort 异常: $e');
+        return null;
+      });
     } else {
       _spiderPort = port;
       onSpiderPortChanged.value = port;

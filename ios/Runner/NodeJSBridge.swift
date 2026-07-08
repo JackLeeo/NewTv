@@ -5,9 +5,18 @@
 //   - startNodeJS({nativePort, sourcePath}) -> Bool
 //   - stopNodeJS() -> Void
 //   - getStatus() -> {isRunning, isNodeReady}
+//   - setManagementPort(port: Int) -> Void   (Dart 同步 mgmt port 给 Swift)
 //
 // 调 NodeMobile.start(argc, argv) 启动 Node.js 进程。
 // Node.js 进程退出时通过 channel 推 'onNodeExit' 给 Dart。
+//
+// **iOS SIGKILL 场景修复** (2026-07-08):
+//   iOS 7分45秒后台后会 SIGKILL embed library, Swift `node_start` 阻塞不返回
+//   → isRunning 卡 true + onNodeExit 不发 → Dart 不知道 Node.js 死了.
+//   修复: Swift 监听 UIApplication.didBecomeActiveNotification, 每次 app
+//   回前台 ping http://127.0.0.1:managementPort/check. 失败 → isRunning=false
+//   + notifyDart('onNodeExit'). Dart onNodeExit 收到后清状态, handleSceneActive
+//   看到 isRunning=false 调 startNodeJS 重启.
 //
 // **目录约定**：
 //   - main.js 在 mainBundle 的 `nodejs-project/main.js`（workflow 嵌入）
@@ -20,6 +29,7 @@
 
 import Foundation
 import Flutter
+import UIKit
 
 @objc class NodeJSBridge: NSObject {
 
@@ -29,6 +39,7 @@ import Flutter
     private let channel: FlutterMethodChannel
     private let messenger: FlutterBinaryMessenger
     private var isRunning: Bool = false
+    private var managementPort: Int = 0   // Dart 同步过来的 mgmt port, foreground ping 用
     private let workQueue = DispatchQueue(label: "com.tvbox.nodejs",
                                           qos: .userInitiated)
     private var argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
@@ -44,6 +55,64 @@ import Flutter
         self.channel.setMethodCallHandler { [weak self] (call, result) in
             self?.handle(call: call, result: result)
         }
+
+        // **iOS SIGKILL 修复**: 监听 app 回前台, 主动 ping Node.js 确认是否还活着
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        print("[NodeJSBridge] 已注册 UIApplication.didBecomeActiveNotification 监听")
+    }
+
+    /// iOS app 回前台时触发 - 用于检测 Node.js 是否被 iOS SIGKILL
+    @objc private func appDidBecomeActive() {
+        print("[NodeJSBridge] app did become active, 检查 Node.js 健康")
+        checkNodeJSHealth()
+    }
+
+    /// ping http://127.0.0.1:managementPort/check, 失败说明 Node.js 死了
+    /// 死亡时清 isRunning + managementPort, 通知 Dart onNodeExit 触发恢复流程
+    private func checkNodeJSHealth() {
+        guard isRunning, managementPort > 0 else {
+            print("[NodeJSBridge] skip health check: isRunning=\(isRunning) managementPort=\(managementPort)")
+            return
+        }
+        let port = managementPort
+        guard let url = URL(string: "http://127.0.0.1:\(port)/check") else {
+            print("[NodeJSBridge] invalid health check URL")
+            return
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2.0
+        request.httpMethod = "GET"
+
+        print("[NodeJSBridge] ping http://127.0.0.1:\(port)/check ...")
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            if let error = error {
+                print("[NodeJSBridge] ❌ Node.js health check 失败: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    print("[NodeJSBridge] Node.js 已死, 清状态 + 通知 Dart")
+                    self.isRunning = false
+                    self.managementPort = 0
+                    self.notifyDart(method: "onNodeExit", arguments: 0)
+                }
+                return
+            }
+            if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200 {
+                print("[NodeJSBridge] ✅ Node.js health check OK")
+            } else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                print("[NodeJSBridge] ❌ Node.js health check 异常 statusCode=\(code)")
+                DispatchQueue.main.async {
+                    self.isRunning = false
+                    self.managementPort = 0
+                    self.notifyDart(method: "onNodeExit", arguments: 0)
+                }
+            }
+        }.resume()
     }
 
     // ============================================================
@@ -68,6 +137,14 @@ import Flutter
             result(ok)
         case "stopNodeJS":
             stopNodeJS()
+            result(nil)
+        case "setManagementPort":
+            // Dart 收到 Node.js onCatPawOpenPort(mgmt) 时调,
+            // Swift 存 managementPort 用于前台 ping 检测 Node.js 死活
+            if let port = call.arguments as? Int {
+                managementPort = port
+                print("[NodeJSBridge] managementPort 同步: \(port)")
+            }
             result(nil)
         case "getStatus":
             result([
@@ -165,6 +242,7 @@ import Flutter
         if isRunning {
             print("[NodeJSBridge] stopNodeJS: reset 内部状态（Node.js 进程仍在跑，需自然退出）")
             isRunning = false
+            managementPort = 0
         }
     }
 

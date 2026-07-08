@@ -407,6 +407,46 @@ class AppState extends GetxController {
       },
     );
 
+    // **第零关**: 如果 Node.js 已死 (isRunning=false), 先重启
+    // iOS SIGKILL 场景: Swift 端 onNodeExit 因 node_start 阻塞不返回没跑,
+    // Swift 主动 ping /check 失败时发 onNodeExit 给 Dart, Dart onNodeExit
+    // 收到时清 isRunning/旧端口. handleSceneActive 看到 isRunning=false
+    // 调 startNodeJS 重启. 注意: startNodeJS 调 Swift 启动新 Node.js, 新
+    // Node.js 启动后会通过 onCatPawOpenPort 通知新端口给 Dart (Dart HTTP
+    // server 一直跑没停, 通知链没断).
+    if (!nodeIsRunning) {
+      AppLog.instance.sceneStep(cid, 'restart_needed',
+          fields: {
+            'reason': 'isRunning=false, Node.js 已死 (iOS SIGKILL 或异常退出)',
+            'oldSpiderPort': spiderPort,
+            'oldMgmtPort': managementPort,
+          });
+      final restartStart = DateTime.now();
+      final restartOk = await NodeJSManager.instance.startNodeJS();
+      AppLog.instance.sceneStep(
+        cid,
+        restartOk ? 'restart_ok' : 'restart_fail',
+        elapsedMs: DateTime.now().difference(restartStart).inMilliseconds,
+        level: restartOk ? LogLevel.info : LogLevel.error,
+        fields: {'ok': restartOk},
+      );
+      if (!restartOk) {
+        loadingPhase.value = LoadingPhase.failed;
+        configLoadError.value = 'Node.js 重启失败, 请关闭应用后重新打开';
+        AppLog.instance.sceneEnd(
+          cid,
+          'restart_fail',
+          elapsedMs: DateTime.now().difference(startAt).inMilliseconds,
+          ok: false,
+          fields: {'path': 'restart'},
+        );
+        return;
+      }
+      // 启动成功, 重新读端口 (新 Node.js 刚 listen, 应该已经通过
+      // onCatPawOpenPort 通知过). 短暂 wait 让 Dart 同步最新状态.
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+
     // **第一步**: 立即重建 dio：恢复 iOS 后台断开的 socket
     AppLog.instance.sceneStep(cid, 'invalidate_dio',
         fields: {'reason': 'iOS 后台断开 socket 恢复'});
