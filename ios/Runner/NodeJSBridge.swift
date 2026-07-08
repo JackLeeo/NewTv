@@ -183,6 +183,24 @@ import UIKit
         // 2. NODE_PATH
         setenv("NODE_PATH", sourcePath, 1)
 
+        // **2026-07-08 node.log 诊断**: 把 iOS Documents 沙盒下的 node.log 路径
+        // 通过 argv 传给 main.js, main.js 启动时 fs.appendFileSync 重定向
+        // console.log/error. 用来诊断 force_restart 后新 Node.js 静默 crash
+        // (iOS SIGKILL 场景 Swift node_start 返 true 但 Node.js 立即 exit
+        // 没有任何 onCatPawOpenPort/onMessage 通知 Dart 的根因)
+        let documentsDir = NSSearchPathForDirectoriesInDomains(
+            .documentDirectory, .userDomainMask, true).first ?? ""
+        let nodejsProjectDir = "\(documentsDir)/nodejs-project"
+        let nodeLogPath = "\(nodejsProjectDir)/runtime/node.log"
+        // 确保 runtime 目录存在, 避免 main.js appendFileSync 时 ENOENT
+        let fm = FileManager.default
+        let runtimeDir = "\(nodejsProjectDir)/runtime"
+        if !fm.fileExists(atPath: runtimeDir) {
+            try? fm.createDirectory(
+                atPath: runtimeDir, withIntermediateDirectories: true)
+        }
+        print("[NodeJSBridge] node.log path: \(nodeLogPath)")
+
         // 3. 构造 argv
         //    node_start 的 argc 是 Int32 (即 C int)；
         //    argv 是 char** (CChar)；
@@ -192,7 +210,9 @@ import UIKit
             "--security-revert=CVE-2023-46809",
             scriptPath,
             "--native-port",
-            String(nativePort)
+            String(nativePort),
+            "--node-log-path",
+            nodeLogPath,
         ]
         let argcCount = args.count           // Int, 用于 Swift 数组下标
         let argc: Int32 = Int32(argcCount)   // Int32, 用于 node_start API
