@@ -51,9 +51,15 @@ import Darwin  // dlsym
     //   新 framework (JackLeeo/nodejs-mobile fork) 才有.
     //   用 dlsym 查符号, 不存在时降级到"只 reset 状态"逻辑.
     //   这样: 测试期用旧 framework 不会 crash, patch framework 编译完后才走 graceful exit.
+    //
+    // **RTLD_DEFAULT in Swift**:
+    //   Darwin 的 RTLD_DEFAULT 是 C 宏 ((void*) -2), Swift 编译器
+    //   "Cannot find 'RTLD_DEFAULT' in scope". 直接用数值 -2 避免 import 麻烦.
+    //   Darwin.dlfcn.h: #define RTLD_DEFAULT ((void *) -2)
+    private static let RTLD_DEFAULT_PTR = UnsafeMutableRawPointer(bitPattern: -2)
     private typealias NodeExitFunc = @convention(c) (Int32) -> Void
     private lazy var nodeExitPtr: NodeExitFunc? = {
-        guard let sym = dlsym(RTLD_DEFAULT, "node_exit") else {
+        guard let sym = dlsym(Self.RTLD_DEFAULT_PTR, "node_exit") else {
             print("[NodeJSBridge] ⚠️ node_exit 符号未找到 (旧 framework?), 降级到 reset 状态")
             return nil
         }
@@ -61,7 +67,7 @@ import Darwin  // dlsym
     }()
     private typealias NodeIsRunningFunc = @convention(c) () -> Int32
     private lazy var nodeIsRunningPtr: NodeIsRunningFunc? = {
-        guard let sym = dlsym(RTLD_DEFAULT, "node_is_running") else { return nil }
+        guard let sym = dlsym(Self.RTLD_DEFAULT_PTR, "node_is_running") else { return nil }
         return unsafeBitCast(sym, to: NodeIsRunningFunc.self)
     }()
 
