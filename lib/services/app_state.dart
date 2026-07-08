@@ -83,6 +83,10 @@ class AppState extends GetxController {
   String _lastLiveUrl = '';
   bool _nodeJSStarted = false;
 
+  /// 重入 guard - 避免 lifecycle 抖动导致 handleSceneActive 嵌套跑
+  /// 第二次及以后的调用直接跳过, 不浪费 CPU 也不互相覆盖 loadingPhase
+  bool _isHandleSceneActiveRunning = false;
+
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
 
   @override
@@ -359,7 +363,34 @@ class AppState extends GetxController {
         ApiConfig.instance.sourceBeanList.any((s) => s.isSpiderSource);
     if (!hasSpiderSource) return;
 
+    // **重入 guard**: 避免 lifecycle 抖动 (resumed→inactive→hidden→paused
+    // 间隔 12ms/3ms/0ms) 导致 handleSceneActive 嵌套跑.
+    // cid_1 卡在 reload 125.8 秒时, 第二次 handleSceneActive 进来 (cid_2)
+    // 浪费 CPU 跑完整 4 次重试, 并可能覆盖 loadingPhase.
+    if (_isHandleSceneActiveRunning) {
+      AppLog.instance.entry(LogEntry(
+        category: 'GUARD',
+        action: 'handleSceneActive_skip',
+        level: LogLevel.warn,
+        message: 'handleSceneActive already running, skip duplicate call',
+        fields: {'reason': 'already running'},
+      ));
+      return;
+    }
+    _isHandleSceneActiveRunning = true;
+
+    try {
+      await _handleSceneActiveImpl();
+    } finally {
+      _isHandleSceneActiveRunning = false;
+    }
+  }
+
+  /// handleSceneActive 实际逻辑 - 重入 guard try/finally 包裹
+  Future<void> _handleSceneActiveImpl() async {
     final startAt = DateTime.now();
+    final hasSpiderSource =
+        ApiConfig.instance.sourceBeanList.any((s) => s.isSpiderSource);
     final spiderPort = NodeJSManager.instance.spiderPort;
     final managementPort = NodeJSManager.instance.managementPort;
     final nodeIsRunning = NodeJSManager.instance.isRunning;
