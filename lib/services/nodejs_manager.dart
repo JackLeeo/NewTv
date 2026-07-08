@@ -114,43 +114,15 @@ class NodeJSManager {
     _stopHttpServer();
   }
 
-  /// **iOS SIGKILL 场景专用**: 强制重置平台状态, 触发 Swift 端 stopNodeJS
-  /// 清 isRunning=true 卡死状态. **不**停 Dart HTTP server, 因为新 Node.js
-  /// 启动后要通过 HTTP server 通知新端口.
-  ///
-  /// **与 stopNodeJS() 区别**:
-  ///   - stopNodeJS() 会调 _stopHttpServer(), HTTP server 停掉后新 Node.js
-  ///     启动的 onCatPawOpenPort 通知会丢, 永远拿不到新端口
-  ///   - resetPlatformStateForRestart() 只调 _platform.stopNodeJS(), Swift
-  ///     端 isRunning 清 false, HTTP server 保持跑
-  ///
-  /// **与 forceResetRunningState() 区别**:
-  ///   - forceResetRunningState() 调 _platform.forceResetRunningState(),
-  ///     **不调 Swift**, Swift 端 isRunning 仍卡 true, 后续 startNodeJS
-  ///     会被 Swift 拒绝 (isRunning=true 拒绝启动)
-  ///   - resetPlatformStateForRestart() 调 _platform.stopNodeJS(), 通过
-  ///     invokeMethod 通知 Swift 端 reset isRunning=false
-  ///
-  /// **触发场景** (2026-07-08):
-  ///   iOS 7分+ 后台 embed library 被 SIGKILL, Swift 端 node_start 阻塞
-  ///   不返回 → isRunning 卡 true + onNodeExit 不发. handleSceneActive
-  ///   看到 isRunning=true + ports 死 (Connection refused), 强制调本方法
-  ///   清 Swift 状态后调 startNodeJS 重启 Node.js.
-  void resetPlatformStateForRestart() {
-    AppLog.instance.nodejs('resetPlatformStateForRestart', fields: {
-      'beforeSpiderPort': _platform.spiderPort,
-      'beforeMgmtPort': _platform.managementPort,
-      'beforeIsRunning': _platform.isRunning,
-      'reason':
-          'iOS SIGKILL 后 Swift isRunning 卡 true, 不停 HTTP server, 调平台 stopNodeJS 清状态',
-    });
-    _platform.stopNodeJS();
-    AppLog.instance.nodejs('resetPlatformStateForRestart_done', fields: {
-      'afterSpiderPort': _platform.spiderPort,
-      'afterMgmtPort': _platform.managementPort,
-      'afterIsRunning': _platform.isRunning,
-    });
-  }
+  // **2026-07-08 删 resetPlatformStateForRestart**:
+  // 6988e13 引入的 force_restart 路径 (调本方法清 Swift isRunning + startNodeJS
+  // 重启 Node.js) 实测无效. iOS NodeMobile 是 embed library, V8 单例, 第二次
+  // node_start 调会卡 V8 init 阶段, node.log 0 行新 boot 记录, 新 Node.js
+  // 永远起不来. 而且老 Node.js 通常只是 iOS 后台冻结 (74s 后台不触发 SIGKILL),
+  // 实际还活着, 端口冲突让新 Node.js EADDRINUSE 立即失败.
+  //
+  // 改为: app_state.dart 不再调本方法, 改用 6×10s=60s 长重试给 iOS 自动解冻
+  // 老 Node.js 时间. 重试仍 fail 后弹窗让用户手动重启 app.
 
   void forceResetRunningState() {
     // **关键**: 不停 Dart HTTP server. Node.js 死了之后, iOS 唤醒

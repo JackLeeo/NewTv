@@ -550,9 +550,9 @@ class AppState extends GetxController {
           fields: {'reason': 'managementPort=0'});
     }
 
-    // **第四关**: 兜底 _recoverSpiderService
+    // **第四关**: 兜底 _recoverSpiderService (2026-07-08: 6×10s=60s 长重试)
     AppLog.instance.sceneStep(cid, 'recover_start',
-        fields: {'reason': 'verify+reload 都失败, 走兜底 4 次重试'});
+        fields: {'reason': 'verify+reload 都失败, 走兜底 6×10s=60s 长重试'});
     final recoverStart = DateTime.now();
     final recovered = await _recoverSpiderService(cid);
     AppLog.instance.sceneStep(
@@ -586,14 +586,20 @@ class AppState extends GetxController {
   /// 恢复 Spider 服务 - 对应 Swift recoverSpiderService
   ///
   /// [cid] handleSceneActive 的 correlation id, 串联所有日志
+  ///
+  /// **2026-07-08 改**: 6 次 × 10s = 60s 长重试. 之前 4 × 2s = 8s 不够
+  /// (iOS 后台冻结 Node.js, 解冻时间可达 30s+). 给 iOS 自动解冻老 Node.js
+  /// 充足时间. iOS NodeMobile V8 单例, 不能重启 Node.js (force_restart
+  /// 路径 6988e13 实测无效: 第二次 node_start 卡 V8 init, 新 Node.js
+  /// 起不来).
   Future<bool> _recoverSpiderService(String cid) async {
-    AppLog.instance.sceneStep(cid, 'recover_wait_2s');
-    await Future.delayed(const Duration(seconds: 2));
+    AppLog.instance.sceneStep(cid, 'recover_wait_10s');
+    await Future.delayed(const Duration(seconds: 10));
 
-    for (var attempt = 0; attempt < 4; attempt++) {
+    for (var attempt = 0; attempt < 6; attempt++) {
       final attemptNo = attempt + 1;
       AppLog.instance.sceneStep(cid, 'recover_attempt',
-          fields: {'attempt': attemptNo, 'maxAttempts': 4});
+          fields: {'attempt': attemptNo, 'maxAttempts': 6});
 
       final spiderPort = NodeJSManager.instance.spiderPort;
       AppLog.instance.sceneStep(cid, 'recover_check_spider',
@@ -660,107 +666,35 @@ class AppState extends GetxController {
             fields: {'attempt': attemptNo, 'reason': 'managementPort=0'});
       }
 
-      if (attempt < 3) {
-        AppLog.instance.sceneStep(cid, 'recover_wait_2s',
-            fields: {'attempt': attemptNo, 'nextAttemptIn': '2s'});
-        await Future.delayed(const Duration(seconds: 2));
+      if (attempt < 5) {
+        AppLog.instance.sceneStep(cid, 'recover_wait_10s',
+            fields: {'attempt': attemptNo, 'nextAttemptIn': '10s'});
+        await Future.delayed(const Duration(seconds: 10));
       }
     }
 
     AppLog.instance.sceneStep(cid, 'recover_all_fail',
-        level: LogLevel.error, fields: {'attempts': 4});
+        level: LogLevel.error, fields: {'attempts': 6});
 
-    // **iOS SIGKILL 兜底**: 4 次 checkLocalPort 全 fail + ports 真死 (Connection
-    // refused), 说明 Node.js 真的被杀了. 之前 d5c5f17 加的 Swift didBecomeActive
-    // ping 在「先后台再锁屏」场景不可靠 (深后台 MethodChannel 可能短暂断,
-    // ping 完了 onNodeExit 也传不到 Dart), 表现为:
-    //   - 8 秒后 finalNodeIsRunning 仍 = true (log 实证)
-    //   - 4 次 checkLocalPort 全 Connection refused
-    // 不能依赖 Swift 通知, 必须 Dart 端主动检测 + 强制重启.
+    // **2026-07-08 删 force_restart 路径**:
+    // 6988e13 的 resetPlatformStateForRestart + startNodeJS 强制重启
+    // 实测无效: iOS NodeMobile 是 embed library, V8 单例, 第二次 node_start
+    // 调会卡 V8 init 阶段, node.log 0 行新 boot 记录, 新 Node.js 永远起不来.
+    // 而且老 Node.js 通常只是 iOS 后台冻结 (74s 后台不触发 SIGKILL), 实际
+    // 还活着, 端口冲突让新 Node.js EADDRINUSE 立即失败.
     //
-    // **强制重启流程**:
-    //   1. resetPlatformStateForRestart() 调平台 stopNodeJS, Swift 端
-    //      isRunning 清 false (平台 stopNodeJS 调 invokeMethod 'stopNodeJS'
-    //      → Swift 端 isRunning=false). **不**停 HTTP server.
-    //   2. 短 wait 200ms 等 Swift 异步处理 stopNodeJS invokeMethod
-    //   3. startNodeJS() 调 Swift 启动新 Node.js (Swift 端 isRunning=false
-    //      会接受启动). 新 Node.js 启动后 onCatPawOpenPort 通过一直跑着的
-    //      HTTP server 通知 Dart 新端口.
-    //   4. 等 1s 让端口同步, 然后 reloadSourceViaManagementPort 重新加载源.
-    AppLog.instance.sceneStep(cid, 'force_restart_triggered',
+    // 现在改为: 60s 长重试后仍 fail → 弹窗告诉用户"服务已冻结, 请手动重启
+    // app", 不再尝试重启 Node.js. 用户手动重启 app 后, iOS 会清空所有进程
+    // 状态, 重新 init 一切, 不会受 V8 单例限制.
+    AppLog.instance.sceneStep(cid, 'force_restart_removed',
         level: LogLevel.warn,
         fields: {
           'reason':
-              '4 次 checkLocalPort 全 fail + ports 真死, iOS SIGKILL 场景, 强制重启 Node.js',
-          'beforeIsRunning': NodeJSManager.instance.isRunning,
-          'beforeSpiderPort': NodeJSManager.instance.spiderPort,
-          'beforeMgmtPort': NodeJSManager.instance.managementPort,
+              'iOS NodeMobile V8 单例限制, 强制重启 Node.js 实测无效, 改为弹窗',
+          'spiderPort': NodeJSManager.instance.spiderPort,
+          'mgmtPort': NodeJSManager.instance.managementPort,
         });
-
-    if (NodeJSManager.instance.isRunning) {
-      // isRunning 卡 true, 必须先清状态才能调 startNodeJS
-      NodeJSManager.instance.resetPlatformStateForRestart();
-      // Swift invokeMethod 是异步的, 等 200ms 让 Swift 端处理 stopNodeJS
-      await Future.delayed(const Duration(milliseconds: 200));
-    }
-
-    final restartStart = DateTime.now();
-    final restartOk = await NodeJSManager.instance.startNodeJS();
-    AppLog.instance.sceneStep(
-      cid,
-      restartOk ? 'force_restart_start_ok' : 'force_restart_start_fail',
-      elapsedMs: DateTime.now().difference(restartStart).inMilliseconds,
-      level: restartOk ? LogLevel.info : LogLevel.error,
-      fields: {'ok': restartOk},
-    );
-    if (!restartOk) {
-      return false;
-    }
-
-    // 等新端口同步 (新 Node.js 启动后会通过 onCatPawOpenPort 通知 Dart)
-    await Future.delayed(const Duration(milliseconds: 1000));
-    final newMgmtPort = NodeJSManager.instance.managementPort;
-    final newSpiderPort = NodeJSManager.instance.spiderPort;
-    AppLog.instance.sceneStep(cid, 'force_restart_ports_synced',
-        fields: {
-          'newSpiderPort': newSpiderPort,
-          'newMgmtPort': newMgmtPort,
-          'waitedMs': 1000,
-        });
-    if (newMgmtPort <= 0) {
-      AppLog.instance.sceneStep(cid, 'force_restart_no_mgmt_port',
-          level: LogLevel.error,
-          fields: {
-            'reason':
-                'startNodeJS 返 true 但 1s 后 mgmt port 仍未同步, 重启失败',
-          });
-      return false;
-    }
-
-    // 用新 mgmt port 重新加载源
-    final reloadStart = DateTime.now();
-    final reloaded = await NodeJSManager.instance
-        .reloadSourceViaManagementPort(newMgmtPort);
-    AppLog.instance.sceneStep(
-      cid,
-      reloaded ? 'force_restart_reload_ok' : 'force_restart_reload_fail',
-      elapsedMs: DateTime.now().difference(reloadStart).inMilliseconds,
-      level: reloaded ? LogLevel.info : LogLevel.warn,
-      fields: {'ok': reloaded, 'managementPort': newMgmtPort},
-    );
-    if (reloaded) {
-      _nodeJSStarted = true;
-      AppLog.instance.sceneStep(cid, 'force_restart_recovered',
-          level: LogLevel.info,
-          fields: {
-            'newSpiderPort': NodeJSManager.instance.spiderPort,
-            'newMgmtPort': newMgmtPort,
-          });
-      return true;
-    }
-    // 源 reload 失败, 但 Node.js 重启成功了, 算部分恢复
-    _nodeJSStarted = true;
-    return true;
+    return false;
   }
 
   // ============================================================
