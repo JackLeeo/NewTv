@@ -26,9 +26,10 @@ require 'pathname'
 options = {
   xcframework: nil,
   pbxproj: 'Runner.xcodeproj/project.pbxproj',
-  # 默认只注册 NodeJSBridge.swift（其它 Swift bridge 在需要时通过
-  # --extra-swift 显式传入）
-  extra_swift_files: %w[NodeJSBridge.swift],
+  # 默认注册 NodeJSBridge.swift + BackgroundAudio.swift (2026-07-08 方案 A
+  # Background Audio 启动器). 其它 Swift bridge 在需要时通过
+  # --extra-swift 显式传入.
+  extra_swift_files: %w[NodeJSBridge.swift BackgroundAudio.swift],
 }
 
 OptionParser.new do |opts|
@@ -38,7 +39,7 @@ OptionParser.new do |opts|
   opts.on('--pbxproj PATH', 'project.pbxproj 路径（默认 Runner.xcodeproj/project.pbxproj）') do |v|
     options[:pbxproj] = v
   end
-  opts.on('--extra-swift x,y,z', Array, '额外的 Swift 文件列表（默认 NodeJSBridge.swift）') do |v|
+  opts.on('--extra-swift x,y,z', Array, '额外的 Swift 文件列表（默认 NodeJSBridge.swift + BackgroundAudio.swift）') do |v|
     options[:extra_swift_files] = v
   end
 end.parse!

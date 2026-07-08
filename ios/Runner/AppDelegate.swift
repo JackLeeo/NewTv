@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import AVFoundation
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -11,6 +12,35 @@ import UIKit
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     application.applicationSupportsShakeToEdit = false // Disable shake to undo
+
+    // **2026-07-08 方案 A (Background Audio)**:
+    // 启动 silent audio playback, 让 iOS 把 app 当作 "audio app",
+    // 维持 app 在后台 / 锁屏时不挂起 embed library (Node.js 进程).
+    // 见 BackgroundAudio.swift 详细说明.
+    // 必须在 Flutter 引擎启动**之前**调, 否则 iOS 在 Flutter 启动过程中
+    // 可能已经判定 app 进入 inactive.
+    BackgroundAudio.shared.start()
+
+    // 监听 lifecycle 事件, 在进入后台前重新激活 audio session
+    NotificationCenter.default.addObserver(
+      BackgroundAudio.shared,
+      selector: #selector(BackgroundAudio.appWillResignActive),
+      name: UIApplication.willResignActiveNotification,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      BackgroundAudio.shared,
+      selector: #selector(BackgroundAudio.appDidEnterBackground),
+      name: UIApplication.didEnterBackgroundNotification,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      BackgroundAudio.shared,
+      selector: #selector(BackgroundAudio.appWillEnterForeground),
+      name: UIApplication.willEnterForegroundNotification,
+      object: nil
+    )
+
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 

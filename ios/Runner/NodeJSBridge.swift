@@ -30,6 +30,7 @@
 import Foundation
 import Flutter
 import UIKit
+import Darwin  // dlsym
 
 @objc class NodeJSBridge: NSObject {
 
@@ -44,6 +45,25 @@ import UIKit
                                           qos: .userInitiated)
     private var argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
     private var argcCopy: Int = 0
+
+    // **2026-07-08 方案 B (Patch NodeMobile) runtime detection**:
+    //   旧 framework (janeasystems/nodejs-mobile 官方版 v18.20.4) 没有 node_exit 符号.
+    //   新 framework (JackLeeo/nodejs-mobile fork) 才有.
+    //   用 dlsym 查符号, 不存在时降级到"只 reset 状态"逻辑.
+    //   这样: 测试期用旧 framework 不会 crash, patch framework 编译完后才走 graceful exit.
+    private typealias NodeExitFunc = @convention(c) (Int32) -> Void
+    private lazy var nodeExitPtr: NodeExitFunc? = {
+        guard let sym = dlsym(RTLD_DEFAULT, "node_exit") else {
+            print("[NodeJSBridge] ⚠️ node_exit 符号未找到 (旧 framework?), 降级到 reset 状态")
+            return nil
+        }
+        return unsafeBitCast(sym, to: NodeExitFunc.self)
+    }()
+    private typealias NodeIsRunningFunc = @convention(c) () -> Int32
+    private lazy var nodeIsRunningPtr: NodeIsRunningFunc? = {
+        guard let sym = dlsym(RTLD_DEFAULT, "node_is_running") else { return nil }
+        return unsafeBitCast(sym, to: NodeIsRunningFunc.self)
+    }()
 
     @objc init(messenger: FlutterBinaryMessenger) {
         self.messenger = messenger
@@ -252,17 +272,38 @@ import UIKit
     }
 
     private func stopNodeJS() {
-        // NodeMobile.h 只导出 node_start，没有 node_exit。
-        // 实际可行的方案：
-        //   - 只 reset 内部状态（isRunning = false），Node.js 进程继续跑；
-        //   - 或者让 main.js 检测一个 IPC 信号主动退出。
-        // 当前实现：reset 状态 + 通知 Dart。
-        // iOS 进程被杀时 Node.js 也会被 SIGKILL。
-        // 参考 D:\lj\11\tvbox_project\ios\Runner\NodeJSManager.m:507-515
+        // **2026-07-08 方案 B (Patch NodeMobile) + 方案 A (Background Audio)**:
+        // 用 NodeMobile 暴露的 node_exit() 调 graceful shutdown V8 + libuv.
+        // node_exit 同步 block 直到 V8 thread 完全退出 (workQueue 上的
+        // node_start 跑完 cleanup + TearDownOncePerProcess), 然后返回.
+        // 紧接着 Swift 通知 Dart onNodeExit, Dart 收到后会调 startNodeJS
+        // 重启 Node.js (新 isolate + 新 listen socket).
+        //
+        // **降级兼容旧 framework**:
+        //   dlsym 找不到 node_exit 符号 (用旧 janeasystems 官方版) 时,
+        //   走 "只 reset 状态" 逻辑. Node.js 进程继续跑, 用户杀 app 时一起死.
+        //   这种情况由 Background Audio (方案 A) 兜底, 避免 SIGKILL.
         if isRunning {
-            print("[NodeJSBridge] stopNodeJS: reset 内部状态（Node.js 进程仍在跑，需自然退出）")
+            if let nodeExit = nodeExitPtr {
+                print("[NodeJSBridge] stopNodeJS: 调 node_exit(0) graceful shutdown V8")
+                // **关键**: node_exit 必须在非 workQueue thread 调 (workQueue 上跑
+                // node_start, node_exit 在同一个 thread 调会死锁). MethodChannel
+                // 回调默认 main thread, 所以这里是 main thread, 安全.
+                // node_exit 内部会 spin wait 直到 V8 thread 跑完, 通常 500ms-2s.
+                let startTime = Date()
+                nodeExit(0)
+                let elapsed = Date().timeIntervalSince(startTime)
+                print("[NodeJSBridge] node_exit(0) 返回, V8 已退出 (耗时 \(String(format: "%.2f", elapsed))s)")
+            } else {
+                print("[NodeJSBridge] stopNodeJS: ⚠️ node_exit 不可用, 降级 reset 状态 (依赖 Background Audio 防 SIGKILL)")
+            }
+
             isRunning = false
             managementPort = 0
+            // 通知 Dart, 触发 handleSceneActive 走 restart_needed 路径
+            notifyDart(method: "onNodeExit", arguments: 0)
+        } else {
+            print("[NodeJSBridge] stopNodeJS: 状态 isRunning=false, 无需 stop")
         }
     }
 
