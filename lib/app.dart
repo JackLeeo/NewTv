@@ -69,6 +69,10 @@ class _ContentViewState extends State<ContentView>
   // 设置控制器（多仓库选择）
   SettingsController? _settingsVM;
 
+  /// 上一次 lifecycle state (用于记录 from→to 转换)
+  AppLifecycleState? _lastLifecycleState;
+  DateTime? _lastLifecycleChangeAt;
+
   @override
   void initState() {
     super.initState();
@@ -111,9 +115,36 @@ class _ContentViewState extends State<ContentView>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // 对应 Swift onChange(of: scenePhase) - 应用恢复前台时检查服务
-    AppLog.instance.log('ContentView didChangeAppLifecycleState: $state');
+    final from = _lastLifecycleState;
+    final now = DateTime.now();
+    final prevAt = _lastLifecycleChangeAt;
+    final sincePrevMs =
+        prevAt == null ? null : now.difference(prevAt).inMilliseconds;
+
+    AppLog.instance.lifecycle(
+      'didChange',
+      from: from,
+      to: state,
+      source: 'ContentView',
+      fields: {
+        'isConfigLoaded': Get.find<AppState>().isConfigLoaded.value,
+        if (sincePrevMs != null) 'sincePrevMs': sincePrevMs,
+      },
+    );
+
+    _lastLifecycleState = state;
+    _lastLifecycleChangeAt = now;
+
     if (state == AppLifecycleState.resumed) {
       final appState = Get.find<AppState>();
+      AppLog.instance.lifecycle(
+        'trigger_handleSceneActive',
+        to: state,
+        source: 'ContentView.resumed',
+        fields: {
+          'reason': 'AppLifecycleState.resumed → handleSceneActive',
+        },
+      );
       appState.handleSceneActive();
     }
   }

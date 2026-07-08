@@ -359,129 +359,245 @@ class AppState extends GetxController {
         ApiConfig.instance.sourceBeanList.any((s) => s.isSpiderSource);
     if (!hasSpiderSource) return;
 
-    AppLog.instance.log('=== handleSceneActive 开始 ===');
-
-    // 立即重建 dio：恢复 iOS 后台断开的 socket
-    SpiderService.instance.invalidateSession();
-    NetworkManager.instance.invalidateSession();
-    AppLog.instance.log('已重建 dio session');
-
+    final startAt = DateTime.now();
     final spiderPort = NodeJSManager.instance.spiderPort;
     final managementPort = NodeJSManager.instance.managementPort;
     final nodeIsRunning = NodeJSManager.instance.isRunning;
-    AppLog.instance.log(
-        '状态: spiderPort=$spiderPort, managementPort=$managementPort, nodeIsRunning=$nodeIsRunning');
 
-    // **第一关**: 真实 HTTP 探测 Spider 服务
+    final cid = AppLog.instance.sceneStart(
+      'handleSceneActive',
+      fields: {
+        'spiderPort': spiderPort,
+        'managementPort': managementPort,
+        'nodeIsRunning': nodeIsRunning,
+        'hasSpiderSource': hasSpiderSource,
+        'isConfigLoaded': isConfigLoaded.value,
+        'loadingPhase': loadingPhase.value.name,
+      },
+    );
+
+    // **第一步**: 立即重建 dio：恢复 iOS 后台断开的 socket
+    AppLog.instance.sceneStep(cid, 'invalidate_dio',
+        fields: {'reason': 'iOS 后台断开 socket 恢复'});
+    SpiderService.instance.invalidateSession();
+    NetworkManager.instance.invalidateSession();
+
+    // **第二关**: 真实 HTTP 探测 Spider 服务
     if (spiderPort > 0) {
-      AppLog.instance.log('verifySpiderService 开始 (port=$spiderPort)');
+      final verifyStart = DateTime.now();
+      AppLog.instance.sceneStep(cid, 'verify_start',
+          fields: {'spiderPort': spiderPort});
       try {
         final ok =
             await NodeJSManager.instance.verifySpiderService(spiderPort);
-        AppLog.instance.log('verifySpiderService 结果: $ok');
+        AppLog.instance.sceneStep(
+          cid,
+          ok ? 'verify_ok' : 'verify_fail',
+          elapsedMs: DateTime.now().difference(verifyStart).inMilliseconds,
+          fields: {'spiderPort': spiderPort, 'ok': ok},
+        );
         if (ok) {
-          AppLog.instance.log('Spider 健康, 不需要重连');
+          AppLog.instance.sceneEnd(
+            cid,
+            'verify_ok',
+            elapsedMs: DateTime.now().difference(startAt).inMilliseconds,
+            ok: true,
+            fields: {'path': 'verify'},
+          );
           return;
         }
       } catch (e) {
-        AppLog.instance.log('verifySpiderService 异常: $e');
+        AppLog.instance.sceneStep(
+          cid,
+          'verify_exception',
+          elapsedMs: DateTime.now().difference(verifyStart).inMilliseconds,
+          level: LogLevel.error,
+          fields: {'spiderPort': spiderPort},
+          error: e.toString(),
+        );
       }
     } else {
-      AppLog.instance.log('spiderPort=0, 跳过 verifySpiderService');
+      AppLog.instance.sceneStep(cid, 'verify_skip',
+          fields: {'reason': 'spiderPort=0'});
     }
 
     loadingPhase.value = LoadingPhase.reconnecting;
-    AppLog.instance.log('phase=reconnecting');
+    AppLog.instance.sceneStep(cid, 'phase_reconnecting');
 
-    // **回退 0199b73 行为**: 不判定 Node.js 死活, 直接尝试 reload 源
-    // (reload 源能失败就失败, 走兜底 _recoverSpiderService 4 次重试)
-    AppLog.instance.log('尝试 reload 源 (不判定 Node.js 死活)');
+    // **第三关**: 尝试 reload 源 (不判定 Node.js 死活)
     if (managementPort > 0) {
       final oldSpiderPort = spiderPort;
+      final reloadStart = DateTime.now();
+      AppLog.instance.sceneStep(cid, 'reload_start',
+          fields: {'managementPort': managementPort});
       final reloaded = await NodeJSManager.instance
           .reloadSourceViaManagementPort(managementPort);
-      AppLog.instance.log('reloadSourceViaManagementPort 结果: $reloaded');
+      AppLog.instance.sceneStep(
+        cid,
+        reloaded ? 'reload_ok' : 'reload_fail',
+        elapsedMs: DateTime.now().difference(reloadStart).inMilliseconds,
+        fields: {'managementPort': managementPort, 'ok': reloaded},
+      );
       if (reloaded) {
         // 等新 spiderPort, 10s
         var newPortSeen = false;
+        var portSeenAt = 0;
         for (var i = 0; i < 20; i++) {
           final newPort = NodeJSManager.instance.spiderPort;
           if (newPort > 0 && newPort != oldSpiderPort) {
             newPortSeen = true;
-            AppLog.instance.log(
-                '新 spiderPort 就绪: $oldSpiderPort -> $newPort (${i * 500}ms)');
+            portSeenAt = i * 500;
             break;
           }
           await Future.delayed(const Duration(milliseconds: 500));
         }
         if (newPortSeen) {
+          AppLog.instance.sceneStep(cid, 'new_spider_port',
+              elapsedMs: portSeenAt,
+              fields: {
+                'oldSpiderPort': oldSpiderPort,
+                'newSpiderPort': NodeJSManager.instance.spiderPort,
+              });
           await Future.delayed(const Duration(seconds: 1));
           _nodeJSStarted = true;
           loadingPhase.value = LoadingPhase.completed;
-          AppLog.instance.log('reload 成功, phase=completed');
-          AppLog.instance.log('=== handleSceneActive 结束 (reload 源路径) ===');
+          AppLog.instance.sceneEnd(
+            cid,
+            'reload_ok',
+            elapsedMs: DateTime.now().difference(startAt).inMilliseconds,
+            ok: true,
+            fields: {'path': 'reload'},
+          );
           return;
         }
-        AppLog.instance.log('reload 后 10s 内未拿到新 spiderPort');
+        AppLog.instance.sceneStep(cid, 'reload_no_new_port',
+            level: LogLevel.warn,
+            fields: {'oldSpiderPort': oldSpiderPort, 'waitedMs': 10000});
       }
     } else {
-      AppLog.instance.log('managementPort=0, 跳过 reload 源');
+      AppLog.instance.sceneStep(cid, 'reload_skip',
+          fields: {'reason': 'managementPort=0'});
     }
 
-    // 兜底: 走原 _recoverSpiderService（4 次重试 + 端口检查）
-    AppLog.instance.log('走兜底 _recoverSpiderService');
-    final recovered = await _recoverSpiderService();
-    AppLog.instance.log('_recoverSpiderService 结果: $recovered');
+    // **第四关**: 兜底 _recoverSpiderService
+    AppLog.instance.sceneStep(cid, 'recover_start',
+        fields: {'reason': 'verify+reload 都失败, 走兜底 4 次重试'});
+    final recoverStart = DateTime.now();
+    final recovered = await _recoverSpiderService(cid);
+    AppLog.instance.sceneStep(
+      cid,
+      recovered ? 'recover_ok' : 'recover_fail',
+      elapsedMs: DateTime.now().difference(recoverStart).inMilliseconds,
+      level: recovered ? LogLevel.info : LogLevel.error,
+      fields: {'ok': recovered},
+    );
+
     if (recovered) {
       loadingPhase.value = LoadingPhase.completed;
     } else {
       loadingPhase.value = LoadingPhase.failed;
       configLoadError.value = '服务已断开，请关闭应用后重新打开';
     }
-    AppLog.instance.log('=== handleSceneActive 结束 (兜底路径) ===');
+    AppLog.instance.sceneEnd(
+      cid,
+      recovered ? 'recover_ok' : 'recover_fail',
+      elapsedMs: DateTime.now().difference(startAt).inMilliseconds,
+      ok: recovered,
+      fields: {
+        'path': 'recover',
+        'finalSpiderPort': NodeJSManager.instance.spiderPort,
+        'finalMgmtPort': NodeJSManager.instance.managementPort,
+        'finalNodeIsRunning': NodeJSManager.instance.isRunning,
+      },
+    );
   }
 
   /// 恢复 Spider 服务 - 对应 Swift recoverSpiderService
-  Future<bool> _recoverSpiderService() async {
-    AppLog.instance.log('_recoverSpiderService 等待 2s...');
+  ///
+  /// [cid] handleSceneActive 的 correlation id, 串联所有日志
+  Future<bool> _recoverSpiderService(String cid) async {
+    AppLog.instance.sceneStep(cid, 'recover_wait_2s');
     await Future.delayed(const Duration(seconds: 2));
 
     for (var attempt = 0; attempt < 4; attempt++) {
-      AppLog.instance.log('_recoverSpiderService 尝试 ${attempt + 1}/4');
+      final attemptNo = attempt + 1;
+      AppLog.instance.sceneStep(cid, 'recover_attempt',
+          fields: {'attempt': attemptNo, 'maxAttempts': 4});
+
       final spiderPort = NodeJSManager.instance.spiderPort;
-      AppLog.instance.log('  当前 spiderPort=$spiderPort');
+      AppLog.instance.sceneStep(cid, 'recover_check_spider',
+          fields: {'attempt': attemptNo, 'spiderPort': spiderPort});
       if (spiderPort > 0) {
-        if (await NodeJSManager.instance.checkLocalPort(spiderPort)) {
-          AppLog.instance.log('  spiderPort 通, 恢复成功');
+        final checkStart = DateTime.now();
+        final portOk =
+            await NodeJSManager.instance.checkLocalPort(spiderPort);
+        AppLog.instance.sceneStep(
+          cid,
+          'recover_check_spider_result',
+          elapsedMs: DateTime.now().difference(checkStart).inMilliseconds,
+          fields: {'attempt': attemptNo, 'spiderPort': spiderPort, 'ok': portOk},
+        );
+        if (portOk) {
+          AppLog.instance.sceneStep(cid, 'recover_spider_ok',
+              fields: {'attempt': attemptNo, 'spiderPort': spiderPort});
           _nodeJSStarted = true;
           return true;
         }
       }
 
       final managementPort = NodeJSManager.instance.managementPort;
-      AppLog.instance.log('  当前 managementPort=$managementPort');
+      AppLog.instance.sceneStep(cid, 'recover_check_mgmt',
+          fields: {'attempt': attemptNo, 'managementPort': managementPort});
       if (managementPort > 0) {
-        if (await NodeJSManager.instance.checkLocalPort(managementPort)) {
+        final checkStart = DateTime.now();
+        final portOk =
+            await NodeJSManager.instance.checkLocalPort(managementPort);
+        AppLog.instance.sceneStep(
+          cid,
+          'recover_check_mgmt_result',
+          elapsedMs: DateTime.now().difference(checkStart).inMilliseconds,
+          fields: {
+            'attempt': attemptNo,
+            'managementPort': managementPort,
+            'ok': portOk
+          },
+        );
+        if (portOk) {
+          final reloadStart = DateTime.now();
           final reloaded = await NodeJSManager.instance
               .reloadSourceViaManagementPort(managementPort);
-          AppLog.instance.log('  managementPort 通, reloadSource=$reloaded');
+          AppLog.instance.sceneStep(
+            cid,
+            'recover_mgmt_reload',
+            elapsedMs: DateTime.now().difference(reloadStart).inMilliseconds,
+            fields: {
+              'attempt': attemptNo,
+              'managementPort': managementPort,
+              'ok': reloaded
+            },
+          );
           if (reloaded) {
             _nodeJSStarted = true;
             return true;
           }
         } else {
-          AppLog.instance.log('  managementPort 不通');
+          AppLog.instance.sceneStep(cid, 'recover_mgmt_fail',
+              fields: {'attempt': attemptNo, 'managementPort': managementPort});
         }
       } else {
-        AppLog.instance.log('  managementPort=0, 跳过');
+        AppLog.instance.sceneStep(cid, 'recover_mgmt_skip',
+            fields: {'attempt': attemptNo, 'reason': 'managementPort=0'});
       }
 
       if (attempt < 3) {
+        AppLog.instance.sceneStep(cid, 'recover_wait_2s',
+            fields: {'attempt': attemptNo, 'nextAttemptIn': '2s'});
         await Future.delayed(const Duration(seconds: 2));
       }
     }
 
-    AppLog.instance.log('_recoverSpiderService 4 次都失败');
+    AppLog.instance.sceneStep(cid, 'recover_all_fail',
+        level: LogLevel.error, fields: {'attempts': 4});
     return false;
   }
 

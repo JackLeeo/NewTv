@@ -78,6 +78,9 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     super.onClose();
   }
 
+  AppLifecycleState? _lastLifecycleState;
+  DateTime? _lastLifecycleChangeAt;
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // 应用从后台/锁屏切回前台时：
@@ -85,13 +88,43 @@ class HomeController extends GetxController with WidgetsBindingObserver {
     //    导致 isLoading 一直卡在 true，新点击的请求被跳过）
     // 2. 主动刷新数据（homeSourceBean 引用没变，ever 监听不会触发；
     //    且 iOS 后台时 dio socket 已死，旧 dio 不能再用）
-    AppLog.instance.log('HomeController didChangeAppLifecycleState: $state');
+    final from = _lastLifecycleState;
+    final now = DateTime.now();
+    final prevAt = _lastLifecycleChangeAt;
+    final sincePrevMs =
+        prevAt == null ? null : now.difference(prevAt).inMilliseconds;
+
+    AppLog.instance.lifecycle(
+      'didChange',
+      from: from,
+      to: state,
+      source: 'HomeController',
+      fields: {
+        if (sincePrevMs != null) 'sincePrevMs': sincePrevMs,
+        'homeSourceId': ApiConfig.instance.homeSourceBean.value?.id,
+        'sortsCount': sorts.length,
+        'homeVideosCount': homeVideos.length,
+        'categoryVideosCount': categoryVideos.length,
+        'isLoading': isLoading.value,
+      },
+    );
+
+    _lastLifecycleState = state;
+    _lastLifecycleChangeAt = now;
+
     if (state == AppLifecycleState.resumed) {
       isLoading.value = false;
       // 延后一帧执行，避免在 build 阶段触发 setState
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!isClosed) {
-          AppLog.instance.log('HomeController resumed → refresh()');
+          AppLog.instance.lifecycle(
+            'trigger_refresh',
+            to: state,
+            source: 'HomeController.resumed',
+            fields: {
+              'reason': 'AppLifecycleState.resumed → refresh()',
+            },
+          );
           refresh();
         }
       });

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
+import 'app_log.dart';
 import 'nodejs_manager.dart';
 
 /// Spider 服务 - 对应 Swift SpiderService
@@ -23,7 +24,7 @@ class SpiderService {
     return Dio(BaseOptions(
       connectTimeout: const Duration(seconds: 60),
       receiveTimeout: const Duration(seconds: 60),
-    ));
+    ))..interceptors.add(_AppLogInterceptor());
   }
 
   // ============================================================
@@ -309,5 +310,72 @@ class SpiderService {
       _dio.close(force: true);
     } catch (_) {}
     _dio = _buildDio();
+  }
+}
+
+/// Dio 拦截器 - 记录所有 HTTP 请求到 AppLog
+///
+/// 关键: iOS 后台/锁屏切回前台时, dio 请求会卡住或失败, 拦截器记录
+/// 每个请求的开始时间 + 状态码 + 耗时 + 错误, 帮助定位后台恢复时
+/// 哪些 HTTP 请求卡住/失败
+class _AppLogInterceptor extends Interceptor {
+  static const _startTimeKey = '_appLogStartTime';
+
+  @override
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
+    options.extra[_startTimeKey] = DateTime.now();
+    final port = _extractPort(options.uri);
+    AppLog.instance.http(
+      options.method,
+      options.uri.toString(),
+      port: port,
+      caller: 'spider_dio',
+    );
+    super.onRequest(options, handler);
+  }
+
+  @override
+  void onResponse(Response response, ResponseInterceptorHandler handler) {
+    final startAt = response.requestOptions.extra[_startTimeKey] as DateTime?;
+    final elapsed = startAt == null
+        ? null
+        : DateTime.now().difference(startAt).inMilliseconds;
+    final port = _extractPort(response.requestOptions.uri);
+    AppLog.instance.http(
+      response.requestOptions.method,
+      response.requestOptions.uri.toString(),
+      statusCode: response.statusCode,
+      elapsedMs: elapsed,
+      port: port,
+      ok: true,
+      caller: 'spider_dio',
+    );
+    super.onResponse(response, handler);
+  }
+
+  @override
+  void onError(DioException err, ErrorInterceptorHandler handler) {
+    final startAt = err.requestOptions.extra[_startTimeKey] as DateTime?;
+    final elapsed = startAt == null
+        ? null
+        : DateTime.now().difference(startAt).inMilliseconds;
+    final port = _extractPort(err.requestOptions.uri);
+    AppLog.instance.http(
+      err.requestOptions.method,
+      err.requestOptions.uri.toString(),
+      statusCode: err.response?.statusCode,
+      elapsedMs: elapsed,
+      port: port,
+      ok: false,
+      error: '${err.type.name}/${err.message ?? ''}',
+      caller: 'spider_dio',
+    );
+    super.onError(err, handler);
+  }
+
+  /// 从 URI 提取端口 (用于日志)
+  int? _extractPort(Uri uri) {
+    if (uri.port == 0) return null;
+    return uri.port;
   }
 }
