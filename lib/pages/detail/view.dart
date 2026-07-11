@@ -8,6 +8,7 @@ import '../../models/movie.dart';
 import '../../models/vod_info.dart';
 import '../../models/cache_store.dart';
 import '../../services/background_service.dart';
+import '../../services/player_fullscreen_controller.dart';
 import '../../widgets/common_widgets.dart';
 import '../../widgets/video_player.dart';
 import '../../widgets/video_player_pip.dart';
@@ -41,9 +42,13 @@ class _DetailPageState extends State<DetailPage> {
   void _onFullScreenChanged(bool isFull) {
     if (!mounted) return;
     _controller.isFullScreen.value = isFull;
+    // **2026-07-09**: 同步全局全屏状态, 让 app.dart 根 Scaffold 的
+    // 底栏(首页/直播/历史/收藏/设置) 在全屏时隐藏
     if (isFull) {
+      PlayerFullscreenController.instance.enter('detail');
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersive);
     } else {
+      PlayerFullscreenController.instance.exit('detail');
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
   }

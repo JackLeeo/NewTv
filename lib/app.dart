@@ -18,6 +18,7 @@ import 'pages/search/view.dart';
 import 'pages/search/controller.dart';
 import 'pages/settings/controller.dart';
 import 'router/app_pages.dart';
+import 'services/player_fullscreen_controller.dart';
 import 'widgets/video_player_pip.dart';
 
 class TVBoxApp extends StatelessWidget {
@@ -25,6 +26,9 @@ class TVBoxApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 提前注册全屏状态控制器, 这样直播页/详情页 onFullScreenChanged 才能
+    // 直接 PlayerFullscreenController.instance.enter/exit 调用.
+    Get.put(PlayerFullscreenController(), permanent: true);
     return GetMaterialApp(
       title: 'TVBox',
       theme: AppTheme.darkTheme,
@@ -822,7 +826,14 @@ class _ContentViewState extends State<ContentView>
         ],
       ),
       // 浮动导航栏 - 对应 Swift floatingNavBar
-      bottomNavigationBar: Container(
+      // **2026-07-09**: 全屏时隐藏, 让视频真正铺满屏幕
+      // 直播页/详情页 onFullScreenChanged 时调 PlayerFullscreenController
+      // .enter/.exit, 这里 Obx 监听后切到 SizedBox.shrink().
+      bottomNavigationBar: Obx(() {
+        if (PlayerFullscreenController.instance.isFullscreen.value) {
+          return const SizedBox.shrink();
+        }
+        return Container(
         margin: const EdgeInsets.fromLTRB(32, 0, 32, 4),
         decoration: BoxDecoration(
           // 半透明色, 让 BackgroundService 全局背景层透出
@@ -861,7 +872,8 @@ class _ContentViewState extends State<ContentView>
             ),
           ),
         ),
-      ),
+      );
+      }),
     );
   }
 

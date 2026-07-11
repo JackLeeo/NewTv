@@ -1649,87 +1649,104 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     );
   }
 
-  /// 长按倍速提示 - 屏幕中央圆形 2X 浮层
-  /// - 锁定时：显示 "已锁定 2X 倍速，单击取消"
+  /// 长按倍速提示 - 顶部居中紧凑浮层
+  /// - 锁定时：显示 "2X 已锁定，单击取消"
   /// - 按下中未锁定：显示 "2X 长按倍速中" + "↑ 上滑锁定"
+  ///
+  /// **2026-07-09 调整**: 尺寸缩小 + 透明度降低 + 位置上移
+  ///   原版用屏幕中央大圆角方块 (padding 22x16, font 36/13/11, alpha 0.55-0.7),
+  ///   严重遮挡视频画面. 改成顶部小药丸 (padding 12x8, font 22/11/9, alpha 0.28),
+  ///   居中靠上 (top: 48), 不再压住视频主体.
   Widget _buildLongPressSpeedHint() {
     final speed = _playbackSpeed * 2;
     final speedLabel = _formatSpeed(speed);
     final locked = _isLongPressSpeedLocked;
     return IgnorePointer(
-      child: Center(
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOut,
-          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: locked ? 0.7 : 0.55),
-            borderRadius: BorderRadius.circular(20),
-            border: locked
-                ? Border.all(color: AppTheme.accentColor, width: 1.5)
-                : null,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 倍速大字
-              Text(
-                speedLabel,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 36,
-                  fontWeight: FontWeight.w700,
-                  fontFamily: 'monospace',
-                  letterSpacing: 1.5,
+      child: Positioned(
+        top: 48,
+        left: 0,
+        right: 0,
+        child: Center(
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.28),
+              borderRadius: BorderRadius.circular(24),
+              border: locked
+                  ? Border.all(color: AppTheme.accentColor, width: 1)
+                  : null,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                // 倍速大字
+                Text(
+                  speedLabel,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w700,
+                    fontFamily: 'monospace',
+                    letterSpacing: 1.0,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 4),
-              // 提示文字
-              Text(
-                locked ? '倍速已锁定' : '长按倍速中',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
+                const SizedBox(width: 8),
+                // 提示文字 (中间)
+                Text(
+                  locked ? '已锁定' : '长按倍速中',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              // 底部小提示
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (locked) ...[
-                    const Icon(
-                      Icons.touch_app,
-                      color: Colors.white70,
-                      size: 14,
-                    ),
-                    const SizedBox(width: 4),
-                    const Text(
-                      '点击屏幕解除锁定',
-                      style: TextStyle(
+                const SizedBox(width: 8),
+                Container(
+                  width: 0.5,
+                  height: 12,
+                  color: Colors.white.withValues(alpha: 0.35),
+                ),
+                const SizedBox(width: 8),
+                // 底部小提示 (右侧)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (locked) ...[
+                      const Icon(
+                        Icons.touch_app,
                         color: Colors.white70,
-                        fontSize: 11,
+                        size: 11,
                       ),
-                    ),
-                  ] else ...[
-                    const Icon(
-                      Icons.arrow_upward,
-                      color: Colors.white70,
-                      size: 14,
-                    ),
-                    const SizedBox(width: 4),
-                    const Text(
-                      '上滑锁定倍速',
-                      style: TextStyle(
+                      const SizedBox(width: 3),
+                      const Text(
+                        '点击解除',
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 9,
+                        ),
+                      ),
+                    ] else ...[
+                      const Icon(
+                        Icons.arrow_upward,
                         color: Colors.white70,
-                        fontSize: 11,
+                        size: 11,
                       ),
-                    ),
+                      const SizedBox(width: 3),
+                      const Text(
+                        '上滑锁定',
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 9,
+                        ),
+                      ),
+                    ],
                   ],
-                ],
-              ),
-            ],
+                ),
+              ],
+            ),
           ),
         ),
       ),

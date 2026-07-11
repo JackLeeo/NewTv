@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import '../../common/theme.dart';
 import '../../models/live_models.dart';
+import '../../services/player_fullscreen_controller.dart';
 import '../../widgets/video_player.dart';
 import '../../widgets/common_widgets.dart';
 import 'controller.dart';
@@ -133,6 +135,17 @@ class _LivePageState extends State<LivePage> {
           player: _controller.player,
           url: playUrl,
           videoTitle: channel?.channelName ?? '',
+          // **2026-07-09**: 全屏状态同步给 app.dart 根 Scaffold,
+          // 隐藏底栏(首页/直播/历史/收藏/设置)
+          onFullScreenChanged: (isFull) {
+            if (isFull) {
+              PlayerFullscreenController.instance.enter('live');
+              SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersive);
+            } else {
+              PlayerFullscreenController.instance.exit('live');
+              SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+            }
+          },
           onError: () {
             _handlePlaybackFailure(trigger: 'player_error');
           },
