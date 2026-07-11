@@ -1,11 +1,20 @@
+// **2026-07-09 临时关闭**: 调试期已结束, node.log 长期写会占用 Documents
+// 缓存. 暂时停用, 代码保留, 需时把下方 [NODE_LOG_ENABLED] 改成 true 然后
+// 重新跑 esbuild 重新打包 dist/main.js, 再走 iOS build 流程.
+//
 // **2026-07-08 node.log 诊断**: 启动时立刻解析 --node-log-path argv, 用
 // require('fs') 同步追加 console.log/error + uncaughtException 到
 // iOS Documents 沙盒 node.log. 必须在 require('http') / require('axios')
 // 之前装好, 这样连 require 阶段抛错 / 静默 crash 都能记下 stack.
 //
 // fs 是 native POSIX, 不依赖 WASM/undici/fetch, iOS NodeMobile 可用.
+
+// **总开关** - false 时整段 log 初始化跳过, console.log 走 OSLog 即可
+// (swift --node-log-path 参数还会传过来, 但 src 不接, 等于无操作)
+const NODE_LOG_ENABLED = false;
+
 let nodeLogFile = null;
-try {
+if (NODE_LOG_ENABLED) try {
     const fs = require('fs');
     const path = require('path');
     const logIdx = process.argv.indexOf('--node-log-path');
@@ -41,6 +50,9 @@ try {
 } catch (e) {
     // fs 装不上就放弃, 走原 console.log
 }
+// NODE_LOG_ENABLED = false 时, 上面的 try { } catch (e) { } 整体不执行,
+// nodeLogFile 保持 null, 后续所有 fs.appendFileSync 通过 (nodeLogFile || ...) 兜底,
+// console.log 走 OSLog 即可 (iOS 上 OSLog 通过 Console.app 能看).
 
 const { createServer } = require('http');
 const axios = require('axios');

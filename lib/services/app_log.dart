@@ -20,6 +20,9 @@
 // - 串行化 Future chain 保证 UTF-8 不截断, 顺序不乱
 // - 便捷方法: lifecycle / scene / verify / reload / ports / http / nodejs / dio
 // - 兼容旧 API: log(message) 仍可用 (走 LEGACY category)
+//
+// **2026-07-09 临时关闭**: 调试期已结束, 文件日志会占用 Documents 缓存空间.
+// 暂时停用, 代码保留, 需时把下方 [kLogEnabled] 改成 true 即可恢复.
 
 import 'dart:async';
 import 'dart:convert';
@@ -117,6 +120,15 @@ class AppLog {
   static AppLog get instance => _instance;
   AppLog._internal();
 
+  /// **总开关** - 临时关闭所有日志写入
+  ///
+  /// false: 关闭所有日志 (不写文件, 不 print, 不创建目录)
+  /// true:  恢复日志 (写 <Documents>/nodejs-project/runtime/app.{log,jsonl})
+  ///
+  /// 调试问题时改成 true, 重新构建, 看 log 即可. 默认 false 是因为调试期已
+  /// 结束, 长期写文件会占用 Documents 缓存 (Files app 用户可见).
+  static const bool kLogEnabled = false;
+
   File? _logFile; // app.log
   File? _jsonlFile; // app.jsonl
   String _logPath = '';
@@ -136,6 +148,11 @@ class AppLog {
   /// 初始化: 创建目录和文件
   Future<void> init() async {
     if (_initialized) return;
+    // 关闭时连目录都不创建, 节省 IO
+    if (!kLogEnabled) {
+      _initialized = true;
+      return;
+    }
     try {
       final docs = await getApplicationDocumentsDirectory();
       final runtimeDir = Directory('${docs.path}/nodejs-project/runtime');
@@ -168,6 +185,8 @@ class AppLog {
 
   /// 写一条结构化日志 (核心入口, 所有便捷方法最终走这里)
   void entry(LogEntry e) {
+    // 总开关 - 关闭时所有 entry 静默丢弃
+    if (!kLogEnabled) return;
     final human = e.formatHuman();
     final json = e.formatJson();
     // 同步 print, OSLog 一定能看
