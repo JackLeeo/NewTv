@@ -1661,11 +1661,11 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     final speed = _playbackSpeed * 2;
     final speedLabel = _formatSpeed(speed);
     final locked = _isLongPressSpeedLocked;
-    return IgnorePointer(
-      child: Positioned(
-        top: 48,
-        left: 0,
-        right: 0,
+    return Positioned(
+      top: 48,
+      left: 0,
+      right: 0,
+      child: IgnorePointer(
         child: Center(
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 180),
